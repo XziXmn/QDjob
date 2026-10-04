@@ -88,7 +88,7 @@
 ## 使用方法
 [使用方法](https://github.com/JaniQuiz/QDjob/blob/main/usage.md)  
 
-[网页版(WebUI)使用说明](QDjob_editor/WEBUI.md)
+[网页版(WebUI)使用说明](./WEBUI.md)
 
 [常见错误与解决方案](error_resolution.md)
 
@@ -138,6 +138,7 @@
   <br>
   如果这个项目对你有帮助，请考虑给一个 ⭐️
 </div>
+
 
 
 

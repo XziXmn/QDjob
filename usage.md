@@ -8,7 +8,7 @@
 1. **下载[release](https://github.com/JaniQuiz/QDjob/releases)中的`QDjob.exe`和`QDjob_editor_web.exe`文件，放到同一个目录下**
 
 2. **运行`QDjob_editor_web.exe`**：程序转入后台并自动打开浏览器（默认 `http://127.0.0.1:33989`）。若未自动打开，手动访问该地址即可。
-   - 端口 / 监听地址 / 访问口令等参数详见 [网页版(WebUI)使用说明](QDjob_editor/WEBUI.md)
+   - 端口 / 监听地址 / 访问口令等参数详见 [网页版(WebUI)使用说明](./WEBUI.md)
    - 建议首次使用在「概览 → 访问口令」中设置访问口令（设置后程序会自动重启生效）
 
 3. **在网页中配置用户**（用户名、tokenid、登录、任务、推送，各项含义与桌面版一致，见下方“方式二”步骤2的说明）
