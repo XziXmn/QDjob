@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}概览 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<h1 class="page-title">概览</h1>
+<p class="page-desc">全局配置与用户总览。工作目录：<code>{{ workdir }}</code></p>
+
+<div class="card">
+  <div class="card-title">⚙️ 全局配置</div>
+  <div class="field">
+    <label>默认 User Agent</label>
+    <textarea id="cfg-ua" rows="3" placeholder="用户未单独配置 User Agent 时使用"></textarea>
+  </div>
+  <div class="grid cols-3">
+    <div class="field">
+      <label>日志级别</label>
+      <select id="cfg-log-level">
+        <option value="DEBUG">DEBUG</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>日志保留天数 (1-30)</label>
+      <input type="number" id="cfg-log-days" min="1" max="30" value="7">
+    </div>
+    <div class="field">
+      <label>重试次数 (1-10)</label>
+      <input type="number" id="cfg-retry" min="1" max="10" value="3">
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn primary" id="save-config">保存全局配置</button>
+    <button class="btn" id="reload-config">重新加载</button>
+  </div>
+  <div id="config-status"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">🔐 访问口令</div>
+  <p class="muted" id="pw-status">检测中...</p>
+  <div id="pw-form" class="hidden">
+    <div class="grid cols-2">
+      <div class="field hidden" id="pw-current-field"><label>当前口令</label><input type="password" id="pw-current"></div>
+      <div class="field"><label>新口令（至少 4 位）</label><input type="password" id="pw-new"></div>
+      <div class="field"><label>确认新口令</label><input type="password" id="pw-confirm"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="pw-save">设置口令并重启</button>
+      <button class="btn danger" id="pw-clear">清除口令并重启</button>
+    </div>
+    <p class="help muted">设置后程序会自动重启以应用新口令，页面会短暂断开，请稍候刷新。</p>
+  </div>
+  <div id="pw-result"></div>
+</div>
+
+<div class="card">
+  <div class="row between">
+    <div class="card-title" style="margin:0">👥 用户 <span class="hint" id="user-count"></span></div>
+    <a class="btn primary sm" href="{{ url_for('page_users') }}">管理用户</a>
+  </div>
+  <div class="grid cols-3 mt-16" id="user-cards"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadConfig() {
+  const res = await UI.api('GET', '/api/config');
+  if (!res.ok) return;
+  const d = res.data;
+  UI.qs('#cfg-ua').value = d.default_user_agent || '';
+  UI.qs('#cfg-log-level').value = d.log_level || 'INFO';
+  UI.qs('#cfg-log-days').value = d.log_retention_days;
+  UI.qs('#cfg-retry').value = d.retry_attempts;
+}
+
+async function loadUsers() {
+  const res = await UI.api('GET', '/api/users');
+  if (!res.ok) return;
+  const box = UI.qs('#user-cards');
+  const users = res.data.users;
+  UI.qs('#user-count').textContent = '(' + users.length + '/' + res.data.max_users + ')';
+  if (!users.length) {
+    box.innerHTML = '<div class="muted">暂无用户，请前往「用户」页面添加。</div>';
+    return;
+  }
+  box.innerHTML = users.map(function (u) {
+    const cookieTag = u.cookies_status === '账号已配置'
+      ? '<span class="tag ok">已配置</span>' : '<span class="tag warn">未配置</span>';
+    return '<a class="card user-card" href="/users/' + encodeURIComponent(u.username) + '" style="text-decoration:none;color:inherit">' +
+      '<h3>' + UI.escapeHtml(u.username) + ' ' + cookieTag + '</h3>' +
+      '<div class="meta">' +
+      '<span>tokenid: ' + (u.tokenid ? '有' : '无') + '</span>' +
+      '<span>任务: ' + u.tasks_enabled + ' 项 · 推送: ' + u.push_services_count + ' 个</span>' +
+      '<span>上次刷新: ' + (u.last_cookies_refresh_time || '从未') + '</span>' +
+      '</div></a>';
+  }).join('');
+}
+
+UI.qs('#save-config').addEventListener('click', async function () {
+  const payload = {
+    default_user_agent: UI.qs('#cfg-ua').value,
+    log_level: UI.qs('#cfg-log-level').value,
+    log_retention_days: parseInt(UI.qs('#cfg-log-days').value, 10),
+    retry_attempts: parseInt(UI.qs('#cfg-retry').value, 10),
+  };
+  const res = await UI.api('PUT', '/api/config', payload, { silent: true });
+  if (res.ok) {
+    UI.status('#config-status', 'ok', '全局配置已保存');
+    UI.toast('全局配置已保存', 'ok');
+  } else {
+    UI.status('#config-status', 'err', res.message || '保存失败');
+  }
+});
+UI.qs('#reload-config').addEventListener('click', loadConfig);
+
+// ---------- 访问口令 ----------
+async function loadAuthSettings() {
+  const res = await UI.api('GET', '/api/auth/settings', undefined, { silent: true });
+  if (!res.ok) return;
+  const d = res.data;
+  const status = UI.qs('#pw-status');
+  const form = UI.qs('#pw-form');
+  if (d.managed) {
+    const tip = d.source === 'env' ? '环境变量 QDJOB_WEBUI_PASSWORD' : '启动参数 --password';
+    status.innerHTML = '当前口令由 <code>' + UI.escapeHtml(tip) + '</code> 管理，无法在此修改。';
+    form.classList.add('hidden');
+    return;
+  }
+  status.textContent = d.required
+    ? '已启用访问口令，可在此修改或清除。'
+    : '当前未设置访问口令，建议设置以保护配置。';
+  form.classList.remove('hidden');
+  UI.qs('#pw-current-field').classList.toggle('hidden', !d.required);
+}
+
+UI.qs('#pw-save').addEventListener('click', async function () {
+  const cur = UI.qs('#pw-current').value;
+  const nw = UI.qs('#pw-new').value;
+  const cf = UI.qs('#pw-confirm').value;
+  if (nw.length < 4) { UI.toast('新口令至少 4 位', 'warn'); return; }
+  if (nw !== cf) { UI.toast('两次输入的新口令不一致', 'warn'); return; }
+  const res = await UI.api('PUT', '/api/auth/password', { current: cur, new: nw, confirm: cf }, { silent: true });
+  if (res.ok) {
+    UI.status('#pw-result', 'ok', res.message, '程序正在重启，请稍候刷新页面。');
+    UI.toast(res.message, 'ok');
+    setTimeout(function () { window.location.href = '/login'; }, 3500);
+  } else {
+    UI.status('#pw-result', 'err', res.message || '设置失败');
+    UI.toast(res.message || '设置失败', 'err');
+  }
+});
+
+UI.qs('#pw-clear').addEventListener('click', async function () {
+  if (!await UI.confirmDialog('确定清除访问口令吗？清除后任何人都可访问本页面。', '清除口令')) return;
+  const res = await UI.api('DELETE', '/api/auth/password', { current: UI.qs('#pw-current').value }, { silent: true });
+  if (res.ok) {
+    UI.status('#pw-result', 'ok', res.message, '程序正在重启，请稍候刷新页面。');
+    UI.toast(res.message, 'ok');
+    setTimeout(function () { window.location.reload(); }, 3500);
+  } else {
+    UI.status('#pw-result', 'err', res.message || '清除失败');
+    UI.toast(res.message || '清除失败', 'err');
+  }
+});
+
+loadAuthSettings();
+loadConfig();
+loadUsers();
+</script>
+{% endblock %}

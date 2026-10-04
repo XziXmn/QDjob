@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}真实设备 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<div class="row between">
+  <div>
+    <h1 class="page-title">真实设备</h1>
+    <p class="page-desc">保存真机抓包得到的设备指纹，登录时选用即可降低风控风险。设备信息与软件版本相互独立。</p>
+  </div>
+  <button class="btn primary" id="add-device">+ 添加设备</button>
+</div>
+<div id="page-status"></div>
+
+<div class="card">
+  <div class="card-title">📱 设备列表 <span class="hint" id="dev-count"></span></div>
+  <div class="grid cols-2" id="device-list"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">🧩 软件版本 <span class="hint">与设备无关，登录时单独选择</span></div>
+  <p class="help muted">内置版本表位于程序目录 <code>versions.json</code>；在此添加的版本会写入工作目录 <code>versions.json</code> 并优先使用。</p>
+  <div class="table-wrap mt-8">
+    <table class="data">
+      <thead><tr><th>version</th><th>versioncode</th><th>sdkversion</th><th>操作</th></tr></thead>
+      <tbody id="version-tbody"></tbody>
+    </table>
+  </div>
+  <div class="row mt-16">
+    <input type="text" id="v-version" placeholder="version 例：7.9.432" style="max-width:200px">
+    <input type="text" id="v-code" placeholder="versioncode 例：1736" style="max-width:200px">
+    <input type="text" id="v-sdk" placeholder="sdkversion 例：401" style="max-width:180px" value="401">
+    <button class="btn primary" id="v-add">添加版本</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let devices = [];
+let versions = [];
+
+async function loadAll() {
+  const res = await UI.api('GET', '/api/devices', undefined, { silent: true });
+  if (!res.ok) return;
+  devices = res.data.devices;
+  versions = res.data.versions;
+  renderDevices();
+  renderVersions();
+}
+
+function renderDevices() {
+  const box = UI.qs('#device-list');
+  UI.qs('#dev-count').textContent = '(' + devices.length + ')';
+  if (!devices.length) {
+    box.innerHTML = '<div class="muted">暂无设备，点击右上角“添加设备”，可从抓包 curl 导入。</div>';
+    return;
+  }
+  box.innerHTML = devices.map(function (d) {
+    const warn = d.warnings && d.warnings.length
+      ? '<div class="tag warn">' + d.warnings.length + ' 项待补全</div>'
+      : '<div class="tag ok">完整</div>';
+    const ibex = d.has_ibex ? '<span class="tag info">含真实指纹</span>' : '<span class="tag mute">无指纹</span>';
+    return '<div class="card" style="margin:0">' +
+      '<div class="row between"><h3 style="margin:0;font-size:16px">' + UI.escapeHtml(d.name) + '</h3>' + warn + '</div>' +
+      '<div class="meta muted mt-8" style="font-size:12.5px">' +
+        '<div>' + UI.escapeHtml(d.brand || '?') + ' / ' + UI.escapeHtml(d.model || '?') +
+        '　Android ' + UI.escapeHtml(String(d.android_version || '?')) + '</div>' +
+        '<div>' + UI.escapeHtml(d.device_name || '') + '</div>' +
+        '<div>版本: ' + (d.version
+          ? UI.escapeHtml(d.version.version + '（' + d.version.versioncode + '）')
+          : '未记录') + '</div>' +
+        '<div>' + ibex + (d.note ? '　' + UI.escapeHtml(d.note) : '') + '</div>' +
+      '</div>' +
+      '<div class="btn-row mt-8">' +
+        '<button class="btn sm" data-edit="' + UI.escapeHtml(d.name) + '">编辑</button>' +
+        '<button class="btn sm danger" data-del="' + UI.escapeHtml(d.name) + '">删除</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+function renderVersions() {
+  const tbody = UI.qs('#version-tbody');
+  if (!versions.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">暂无版本</td></tr>';
+    return;
+  }
+  tbody.innerHTML = versions.map(function (v) {
+    return '<tr><td>' + UI.escapeHtml(v.version) + '</td><td>' + UI.escapeHtml(v.versioncode) + '</td>' +
+      '<td>' + UI.escapeHtml(v.sdkversion || '') + '</td>' +
+      '<td><button class="btn sm danger" data-vdel="' + UI.escapeHtml(v.version) + '|' + UI.escapeHtml(v.versioncode) + '">删除</button></td></tr>';
+  }).join('');
+}
+
+// ---------------- 设备弹窗 ----------------
+function field(id, label, value, ph) {
+  return '<div class="field"><label>' + label + '</label><input type="text" id="' + id +
+    '" value="' + UI.escapeHtml(value || '') + '" placeholder="' + UI.escapeHtml(ph || '') + '"></div>';
+}
+
+function openDeviceModal(rec) {
+  const dev = (rec && rec.device) || {};
+  const res = dev.resolution || {};
+  const ver = (rec && rec.version) || {};
+  UI.openModal(
+    '<h3>' + (rec ? '编辑设备' : '添加设备') + '</h3>' +
+    '<div class="grid cols-2">' +
+      '<div class="field"><label>设备名称（自定义）</label><input type="text" id="d-name" value="' +
+        UI.escapeHtml(rec ? rec.name : '') + '" placeholder="例如：我的小新Pad"></div>' +
+      '<div class="field"><label>备注（可选）</label><input type="text" id="d-note" value="' +
+        UI.escapeHtml(rec ? rec.note : '') + '"></div>' +
+    '</div>' +
+    '<div class="grid cols-3">' +
+      field('d-version', '软件 version（可选）', ver.version, '7.9.420') +
+      field('d-vercode', 'versioncode（可选）', ver.versioncode, '1656') +
+      field('d-sdk', 'sdkversion（可选）', ver.sdkversion || '401', '401') +
+    '</div>' +
+    '<details class="advanced" open><summary>① 从抓包 curl 导入（推荐）</summary>' +
+      '<p class="help muted mt-8">粘贴真机登录抓包的 curl（手机验证码登录或账号密码登录均可，二者设备参数相同），点击解析自动填入下方字段。</p>' +
+      '<div class="field"><textarea id="d-curl" rows="4" placeholder="curl -X POST ..."></textarea></div>' +
+      '<div class="btn-row"><button class="btn" id="d-parse">解析并填入</button></div>' +
+      '<p class="help mt-8" id="d-warn"></p>' +
+    '</details>' +
+    '<details class="advanced"><summary>② 手动输入抓包参数</summary>' +
+      '<p class="help muted mt-8">把抓包请求中对应字段逐个粘贴进来，点“解析并填入”。<strong>ibex 为必填</strong>；其余留空即可。</p>' +
+      '<div class="field"><label>ibex</label><textarea id="f-ibex" rows="3" placeholder="抓包中的 ibex 值"></textarea></div>' +
+      '<div class="grid cols-2">' +
+        field('f-devicetype', 'devicetype', '', 'Lenovo_TB128FU') +
+        field('f-devicename', 'devicename', '', '小新Pad 2022') +
+        field('f-osversion', 'osversion', '', 'Android12_7.9.420_1656') +
+        field('f-version', 'version（版本编号）', '', '1656') +
+        field('f-sdkversion', 'sdkversion', '', '401') +
+        field('f-signature', 'signature（可选）', '', '仅用于兜底提取 qid') +
+      '</div>' +
+      '<div class="btn-row"><button class="btn" id="f-parse">解析并填入</button></div>' +
+      '<p class="help mt-8" id="f-warn"></p>' +
+    '</details>' +
+    '<details class="advanced"><summary>③ 设备字段（完整，可手动修改/补充）</summary>' +
+      '<div class="grid cols-2 mt-8">' +
+        field('d-brand', '品牌 brand', dev.brand, 'Lenovo') +
+        field('d-model', '型号 model', dev.model, 'TB128FU') +
+        field('d-device_name', '设备名称 device_name', dev.device_name, '小新Pad 2022') +
+        field('d-board', '主板 board', dev.board, 'bengal') +
+        field('d-cpu_abi', 'CPU 架构 cpu_abi', dev.cpu_abi, 'arm64-v8a') +
+        field('d-android_version', 'Android 版本', dev.android_version, '12') +
+        field('d-build_id', '构建号 build_id', dev.build_id, 'byws56') +
+        field('d-width', '分辨率宽 width', res.width, '1080') +
+        field('d-height', '分辨率高 height', res.height, '2400') +
+        field('d-qid', 'qid', dev.qid) +
+        field('d-qidth', 'qidth（留空同 qid）', dev.qidth) +
+        field('d-android_id', 'android_id（可选）', dev.android_id) +
+        field('d-jpush_id', 'jpush_id（可选）', dev.jpush_id) +
+      '</div>' +
+      '<div class="field"><label>phone_security（qid_36）</label><textarea id="d-ps" rows="3">' +
+        UI.escapeHtml(dev.phone_security || '') + '</textarea></div>' +
+      '<div class="field"><label>phone_security_over（留空同 phone_security）</label><textarea id="d-pso" rows="3">' +
+        UI.escapeHtml(dev.phone_security_over || '') + '</textarea></div>' +
+      '<div class="field"><label>ibex 设备指纹模板（含 {TS} 占位，由抓包解析自动生成）</label><textarea id="d-ibex" rows="3">' +
+        UI.escapeHtml(dev.ibex_plain || '') + '</textarea></div>' +
+    '</details>' +
+    '<div class="modal-actions"><button class="btn" id="d-cancel">取消</button>' +
+    '<button class="btn primary" id="d-save">保存</button></div>'
+  );
+  UI.qs('#d-cancel').onclick = UI.closeModal;
+
+  function applyParsed(r, warnId) {
+    const d = r.data.device || {};
+    const av = r.data.app_version || {};
+    const set = function (id, val) { if (val !== undefined && val !== null && val !== '') UI.qs(id).value = val; };
+    set('#d-brand', d.brand); set('#d-model', d.model); set('#d-device_name', d.device_name);
+    set('#d-board', d.board); set('#d-cpu_abi', d.cpu_abi); set('#d-android_version', d.android_version);
+    set('#d-build_id', d.build_id); set('#d-qid', d.qid); set('#d-qidth', d.qidth);
+    set('#d-width', d.resolution && d.resolution.width);
+    set('#d-height', d.resolution && d.resolution.height);
+    set('#d-ps', d.phone_security); set('#d-pso', d.phone_security_over);
+    set('#d-ibex', d.ibex_plain);
+    set('#d-version', av.version); set('#d-vercode', av.versioncode); set('#d-sdk', av.sdkversion);
+    if (!UI.qs('#d-name').value) UI.qs('#d-name').value = (d.brand || '') + ' ' + (d.model || '');
+    let msg = '解析完成。';
+    if (av.version) msg += ' 检测到软件版本 ' + av.version + '（' + av.versioncode + '），属版本信息，登录时单独选择。';
+    if (r.data.warnings && r.data.warnings.length) msg += ' 提示：' + r.data.warnings.join('；');
+    UI.qs(warnId).innerHTML = '<span class="tag ' + ((r.data.warnings || []).length ? 'warn' : 'ok') + '">' +
+      UI.escapeHtml(msg) + '</span>';
+  }
+
+  UI.qs('#d-parse').onclick = async function () {
+    const text = UI.qs('#d-curl').value.trim();
+    if (!text) { UI.toast('请先粘贴 curl', 'warn'); return; }
+    const r = await UI.api('POST', '/api/devices/parse', { text: text });
+    if (!r.ok) return;
+    applyParsed(r, '#d-warn');
+  };
+
+  UI.qs('#f-parse').onclick = async function () {
+    const fields = {
+      ibex: UI.qs('#f-ibex').value.trim(),
+      devicetype: UI.qs('#f-devicetype').value.trim(),
+      devicename: UI.qs('#f-devicename').value.trim(),
+      osversion: UI.qs('#f-osversion').value.trim(),
+      version: UI.qs('#f-version').value.trim(),
+      sdkversion: UI.qs('#f-sdkversion').value.trim(),
+      signature: UI.qs('#f-signature').value.trim(),
+    };
+    if (!fields.ibex) { UI.toast('ibex 为必填项', 'warn'); return; }
+    const r = await UI.api('POST', '/api/devices/parse-fields', { fields: fields });
+    if (!r.ok) return;
+    applyParsed(r, '#f-warn');
+  };
+
+  UI.qs('#d-save').onclick = async function () {
+    const device = {
+      brand: UI.qs('#d-brand').value.trim(),
+      model: UI.qs('#d-model').value.trim(),
+      device_name: UI.qs('#d-device_name').value.trim(),
+      board: UI.qs('#d-board').value.trim(),
+      cpu_abi: UI.qs('#d-cpu_abi').value.trim(),
+      android_version: parseInt(UI.qs('#d-android_version').value, 10),
+      build_id: UI.qs('#d-build_id').value.trim(),
+      resolution: { width: parseInt(UI.qs('#d-width').value, 10), height: parseInt(UI.qs('#d-height').value, 10) },
+      qid: UI.qs('#d-qid').value.trim(),
+      qidth: UI.qs('#d-qidth').value.trim(),
+      phone_security: UI.qs('#d-ps').value.trim(),
+      phone_security_over: UI.qs('#d-pso').value.trim(),
+      ibex_plain: UI.qs('#d-ibex').value.trim(),
+      android_id: UI.qs('#d-android_id').value.trim(),
+      jpush_id: UI.qs('#d-jpush_id').value.trim(),
+    };
+    const vVersion = UI.qs('#d-version').value.trim();
+    const vCode = UI.qs('#d-vercode').value.trim();
+    const vSdk = UI.qs('#d-sdk').value.trim();
+    const version = (vVersion && vCode)
+      ? { version: vVersion, versioncode: vCode, sdkversion: vSdk || '401' }
+      : null;
+    const r = await UI.api('POST', '/api/devices', {
+      name: UI.qs('#d-name').value.trim(),
+      note: UI.qs('#d-note').value.trim(),
+      device: device,
+      version: version,
+      source: rec ? (rec.source || 'manual') : 'manual',
+    });
+    if (r.ok) {
+      UI.closeModal();
+      const w = (r.data && r.data.warnings) || [];
+      UI.status('#page-status', w.length ? 'warn' : 'ok', r.message,
+        w.length ? '待补全：' + UI.escapeHtml(w.join('；')) : '');
+      UI.toast(r.message + (w.length ? '（' + w.length + ' 项待补全）' : ''), 'ok');
+      loadAll();
+    }
+  };
+}
+
+document.addEventListener('click', async function (e) {
+  if (e.target.closest('#add-device')) { openDeviceModal(null); return; }
+  const ed = e.target.closest('button[data-edit]');
+  if (ed) {
+    const r = await UI.api('GET', '/api/devices/' + encodeURIComponent(ed.dataset.edit));
+    if (r.ok) openDeviceModal(r.data);
+    return;
+  }
+  const del = e.target.closest('button[data-del]');
+  if (del) {
+    if (!await UI.confirmDialog('确定删除设备「' + del.dataset.del + '」吗？', '删除设备')) return;
+    const r = await UI.api('DELETE', '/api/devices/' + encodeURIComponent(del.dataset.del));
+    if (r.ok) { UI.toast(r.message, 'ok'); loadAll(); }
+    return;
+  }
+  const vdel = e.target.closest('button[data-vdel]');
+  if (vdel) {
+    const parts = vdel.dataset.vdel.split('|');
+    const r = await UI.api('DELETE', '/api/versions?version=' + encodeURIComponent(parts[0]) +
+      '&versioncode=' + encodeURIComponent(parts[1]));
+    if (r.ok) { versions = r.data; renderVersions(); }
+  }
+});
+
+UI.qs('#v-add').addEventListener('click', async function () {
+  const r = await UI.api('PUT', '/api/versions', {
+    version: UI.qs('#v-version').value.trim(),
+    versioncode: UI.qs('#v-code').value.trim(),
+    sdkversion: UI.qs('#v-sdk').value.trim() || '401',
+  });
+  if (r.ok) {
+    UI.toast(r.message, 'ok');
+    UI.status('#page-status', 'ok', r.message);
+    versions = r.data;
+    renderVersions();
+    UI.qs('#v-version').value = '';
+    UI.qs('#v-code').value = '';
+  } else {
+    UI.status('#page-status', 'err', r.message || '添加失败');
+  }
+});
+
+loadAll();
+</script>
+{% endblock %}

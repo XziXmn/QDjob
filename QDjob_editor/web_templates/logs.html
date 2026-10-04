@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}日志 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<h1 class="page-title">日志</h1>
+<p class="page-desc">查看 QDjob 核心日志（qidian.log）与编辑器日志（login.log）。</p>
+
+<div class="card">
+  <div class="row">
+    <div class="field" style="flex:1;min-width:180px;margin:0">
+      <label>日志文件</label>
+      <select id="log-file"></select>
+    </div>
+    <div class="field" style="width:120px;margin:0">
+      <label>行数</label>
+      <input type="number" id="log-lines" value="300" min="1" max="5000">
+    </div>
+    <div class="field" style="width:150px;margin:0">
+      <label>级别</label>
+      <select id="log-level">
+        <option value="">全部</option>
+        <option value="DEBUG">DEBUG</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+        <option value="CRITICAL">CRITICAL</option>
+      </select>
+    </div>
+    <button class="btn primary" id="log-refresh" style="align-self:flex-end">刷新</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">📄 内容</div>
+  <pre class="log-view" id="log-content">请选择日志文件并点击刷新。</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let logFiles = [];
+
+async function loadFileList() {
+  const res = await UI.api('GET', '/api/logs', undefined, { silent: true });
+  if (!res.ok) return;
+  logFiles = res.data;
+  const sel = UI.qs('#log-file');
+  if (!logFiles.length) {
+    sel.innerHTML = '<option value="">（暂无日志文件）</option>';
+    return;
+  }
+  sel.innerHTML = logFiles.map(function (f) {
+    return '<option value="' + UI.escapeHtml(f.name) + '">' + UI.escapeHtml(f.label) +
+      ' — ' + (f.size / 1024).toFixed(1) + ' KB</option>';
+  }).join('');
+  // 优先选择当前（今天）的核心日志
+  const prefer = ['qidian.log', 'login.log'];
+  for (const p of prefer) {
+    const hit = logFiles.find(function (f) { return f.name === p; });
+    if (hit) { sel.value = p; break; }
+  }
+  loadContent();
+}
+
+async function loadContent() {
+  const file = UI.qs('#log-file').value;
+  if (!file) { UI.qs('#log-content').textContent = '（暂无日志文件）'; return; }
+  const lines = UI.qs('#log-lines').value || 300;
+  const level = UI.qs('#log-level').value;
+  const url = '/api/logs/content?file=' + encodeURIComponent(file) +
+    '&lines=' + encodeURIComponent(lines) + '&level=' + encodeURIComponent(level);
+  const res = await UI.api('GET', url, undefined, { silent: true });
+  if (!res.ok) { UI.qs('#log-content').textContent = res.message || '读取失败'; return; }
+  UI.qs('#log-content').textContent = res.data || '（该文件暂无内容）';
+  UI.qs('#log-content').scrollTop = UI.qs('#log-content').scrollHeight;
+}
+
+UI.qs('#log-refresh').addEventListener('click', function () { loadFileList(); });
+UI.qs('#log-file').addEventListener('change', loadContent);
+UI.qs('#log-level').addEventListener('change', loadContent);
+
+loadFileList();
+</script>
+{% endblock %}

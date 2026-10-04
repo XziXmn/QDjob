@@ -1,0 +1,11 @@
+{
+  "_comment": "软件版本表（与设备信息无关）。version=版本号，versioncode=版本编号，sdkversion=SDK版本。可按同样格式继续补充。",
+  "versions": [
+    { "version": "7.9.420", "versioncode": "1656", "sdkversion": "401" },
+    { "version": "7.9.422", "versioncode": "1676", "sdkversion": "401" },
+    { "version": "7.9.424", "versioncode": "1686", "sdkversion": "401" },
+    { "version": "7.9.426", "versioncode": "1696", "sdkversion": "401" },
+    { "version": "7.9.428", "versioncode": "1706", "sdkversion": "401" },
+    { "version": "7.9.430", "versioncode": "1716", "sdkversion": "401" }
+  ]
+}

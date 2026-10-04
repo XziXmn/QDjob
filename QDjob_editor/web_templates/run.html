@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}任务执行 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<h1 class="page-title">任务执行</h1>
+<p class="page-desc">配置定时执行方案，或立即手动执行一次 QDjob。</p>
+
+<div class="card">
+  <div class="card-title">🖥️ 运行环境与定时方式</div>
+  <p class="muted" id="env-status">检测中...</p>
+  <p class="muted" id="exe-status"></p>
+</div>
+
+<div class="card">
+  <div class="card-title">▶️ 立即执行</div>
+  <p class="muted">点击按钮即可调用 QDjob 执行一次任务，输出写入运行日志。</p>
+  <div class="btn-row">
+    <button class="btn primary" id="run-now">立即执行一次</button>
+    <a class="btn" href="{{ url_for('page_logs') }}">查看运行日志</a>
+  </div>
+  <div id="run-status"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">⏰ 定时执行方案 <span class="hint">程序运行期间生效</span></div>
+  <p class="muted">当前方案：<code id="cur-expr">-</code> <span id="run-state"></span></p>
+  <div id="schedule-status"></div>
+
+  <div class="field">
+    <label>执行频率</label>
+    <select id="s-kind">
+      <option value="daily">每天</option>
+      <option value="weekly">每周</option>
+      <option value="monthly">每月 1 号</option>
+      <option value="every_minutes">每隔 N 分钟</option>
+      <option value="every_hours">每隔 N 小时</option>
+    </select>
+  </div>
+  <div class="grid cols-3">
+    <div class="field hidden" id="f-weekday">
+      <label>星期</label>
+      <select id="s-weekday">
+        <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+        <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+        <option value="0">周日</option>
+      </select>
+    </div>
+    <div class="field" id="f-hour"><label>时 (0-23)</label><input type="number" id="s-hour" value="12" min="0" max="23"></div>
+    <div class="field" id="f-minute"><label>分 (0-59)</label><input type="number" id="s-minute" value="0" min="0" max="59"></div>
+    <div class="field hidden" id="f-value"><label id="lbl-value">间隔</label><input type="number" id="s-value" value="30" min="1"></div>
+  </div>
+  <div class="btn-row">
+    <button class="btn primary" id="save-graph">保存定时方案</button>
+    <button class="btn danger" id="remove-schedule">停止 / 移除计划</button>
+  </div>
+
+  <details class="advanced">
+    <summary>自定义 crontab 表达式（高级，点击展开）</summary>
+    <p class="help muted mt-8">格式：<code>分 时 日 月 周</code>，例如 <code>30 8 * * 1-5</code> 表示工作日 08:30，<code>*/30 * * * *</code> 表示每 30 分钟。仅在图形化无法满足时使用。</p>
+    <div class="field">
+      <label>crontab 表达式</label>
+      <input type="text" id="s-raw" placeholder="0 12 * * *">
+    </div>
+    <div class="btn-row"><button class="btn" id="save-raw">保存自定义表达式</button></div>
+  </details>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const kindSel = UI.qs('#s-kind');
+const fWeekday = UI.qs('#f-weekday');
+const fHour = UI.qs('#f-hour');
+const fMinute = UI.qs('#f-minute');
+const fValue = UI.qs('#f-value');
+
+function updateFields() {
+  const k = kindSel.value;
+  fWeekday.classList.toggle('hidden', k !== 'weekly');
+  fHour.classList.toggle('hidden', !['daily', 'weekly', 'monthly'].includes(k));
+  fMinute.classList.toggle('hidden', !['daily', 'weekly', 'monthly', 'every_hours'].includes(k));
+  fValue.classList.toggle('hidden', !['every_minutes', 'every_hours'].includes(k));
+  if (k === 'every_minutes') { UI.qs('#lbl-value').textContent = '间隔（分钟，1-59）'; UI.qs('#s-value').max = 59; UI.qs('#s-value').value = 30; }
+  if (k === 'every_hours') { UI.qs('#lbl-value').textContent = '间隔（小时，1-23）'; UI.qs('#s-value').max = 23; UI.qs('#s-value').value = 6; }
+}
+kindSel.addEventListener('change', updateFields);
+updateFields();
+
+async function loadRunInfo() {
+  const res = await UI.api('GET', '/api/run/info', undefined, { silent: true });
+  if (!res.ok) return;
+  const d = res.data;
+  UI.qs('#cur-expr').textContent = d.expression || '-';
+  UI.qs('#s-raw').value = d.expression || '';
+  UI.qs('#run-state').innerHTML = d.disabled
+    ? '<span class="tag warn">已停止</span>'
+    : (d.running ? '<span class="tag ok">运行中</span>' : '<span class="tag mute">未启用</span>');
+  UI.qs('#env-status').innerHTML =
+    '运行环境：<strong>' + UI.escapeHtml(d.label || d.mode) + '</strong>' +
+    '　定时方式：<strong>进程内调度</strong>' +
+    '<br><span class="muted">' + UI.escapeHtml(d.detail || '') + '</span>';
+  UI.qs('#exe-status').innerHTML = d.qdjob_found
+    ? (d.mode === 'source' ? '源码运行命令：' : 'QDjob 路径：') +
+      '<code>' + UI.escapeHtml(d.qdjob_command) + '</code>'
+    : '<span class="tag err">未找到 QDjob</span>（请把 QDjob 放在同级目录）';
+}
+
+UI.qs('#run-now').addEventListener('click', async function () {
+  const btn = UI.qs('#run-now');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 启动中';
+  UI.status('#run-status', 'info', '正在启动 QDjob…');
+  const res = await UI.api('POST', '/api/run/manual', {}, { silent: true });
+  btn.disabled = false; btn.textContent = '立即执行一次';
+  UI.status('#run-status', res.ok ? 'ok' : 'err', res.message,
+    res.ok ? '输出已写入 <code>logs/manual_run.log</code>，可在「日志」页查看。' : '');
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+});
+
+UI.qs('#save-graph').addEventListener('click', async function () {
+  const res = await UI.api('PUT', '/api/run/schedule', {
+    kind: kindSel.value,
+    hour: parseInt(UI.qs('#s-hour').value, 10),
+    minute: parseInt(UI.qs('#s-minute').value, 10),
+    weekday: parseInt(UI.qs('#s-weekday').value, 10),
+    value: parseInt(UI.qs('#s-value').value, 10),
+  }, { silent: true });
+  UI.status('#schedule-status', res.ok ? 'ok' : 'err', res.message);
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+  if (res.ok) loadRunInfo();
+});
+
+UI.qs('#save-raw').addEventListener('click', async function () {
+  const res = await UI.api('PUT', '/api/run/schedule',
+    { expression: UI.qs('#s-raw').value.trim() }, { silent: true });
+  UI.status('#schedule-status', res.ok ? 'ok' : 'err', res.message);
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+  if (res.ok) loadRunInfo();
+});
+
+UI.qs('#remove-schedule').addEventListener('click', async function () {
+  if (!await UI.confirmDialog('确定停止并移除当前定时方案吗？', '停止定时')) return;
+  const res = await UI.api('DELETE', '/api/run/schedule', undefined, { silent: true });
+  UI.status('#schedule-status', res.ok ? 'warn' : 'err', res.message);
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+  if (res.ok) loadRunInfo();
+});
+
+loadRunInfo();
+</script>
+{% endblock %}

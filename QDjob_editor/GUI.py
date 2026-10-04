@@ -1,18 +1,24 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import tkinter.font as tkfont
 import os, re
 import json
 import time
 import webbrowser, threading
 from Login import QDLogin_PhoneCode, QDLogin_Password, get_random_phone
-from utils import check_login_status, check_login_risk, check_user_status, readtime_report
+from utils import check_login_status, check_login_risk, check_user_status, readtime_report, refresh_cookies
 
 from datetime import datetime
 import sys, random
 import os
 import platform
 
-__version__ = 'v1.3.5'
+__version__ = 'v1.4.1'
+try:
+    # 统一版本来源：QDjob_editor/app_info.py（打包/开发均适用）
+    from app_info import VERSION as __version__
+except Exception:  # noqa: BLE001
+    pass
 
 system = platform.system()
 if system == "Windows":
@@ -176,8 +182,16 @@ class ConfigEditor:
         # style.theme_use('vista')
         
         # 配置Treeview样式
+        # 行高根据字体实际行高动态计算：高分辨率下字号会变大，
+        # 若行高固定为30，则2K/4K下字体变大后行内容会显示不全。
+        try:
+            linespace = tkfont.Font(font=self.default_font).metrics("linespace")
+            treeview_rowheight = max(30, linespace + 10)
+        except Exception:
+            # 兜底：按字号估算（1080p字号12 -> 30）
+            treeview_rowheight = max(30, int(self.default_font[1] * 2.0) + 6)
         style.configure("Treeview", 
-                    rowheight=30, 
+                    rowheight=treeview_rowheight, 
                     borderwidth=0,
                     font=self.default_font)
         style.configure("Treeview.Heading", 
@@ -355,6 +369,9 @@ class ConfigEditor:
         
         ttk.Button(btn_frame, text="检测风险状态", style="Accent.TButton",
             command=self.check_login_risk_for_selected_user).pack(fill="x", pady=2)
+        
+        ttk.Button(btn_frame, text="手动刷新Cookies", style="Accent.TButton",
+            command=self.refresh_cookies_for_selected_user).pack(fill="x", pady=2)
         
         ttk.Button(btn_frame, text="阅读时长上报", style="Accent.TButton",
             command=self.readtime_report_for_selected_user).pack(fill="x", pady=2)
@@ -625,6 +642,76 @@ class ConfigEditor:
                 messagebox.showwarning("风险状态", f"用户 '{username}' 有风险情况⚠️\n {str(is_logged_in)}", icon='warning')
         except Exception as e:
             messagebox.showerror("错误", f"检测风险状态时出错: {str(e)}", icon='error')
+
+    def refresh_cookies_for_selected_user(self):
+        """手动刷新选中用户的cookies"""
+        selected = self.user_list.selection()
+        if not selected:
+            messagebox.showwarning("警告", "请先选择一个用户")
+            return
+
+        index = self.user_list.index(selected[0])
+        user = self.users_data[index]
+        username = user["username"]
+
+        # 检查cookies文件
+        cookies_file = user.get("cookies_file", "")
+        if not cookies_file or not os.path.exists(cookies_file):
+            messagebox.showwarning("警告", f"用户 '{username}' 的cookies未配置")
+            return
+
+        try:
+            with open(cookies_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            if not content.strip():
+                messagebox.showwarning("警告", f"用户 '{username}' 的cookies文件为空")
+                return
+            cookies = json.loads(content)
+        except json.JSONDecodeError as e:
+            messagebox.showerror("错误", f"cookies文件格式错误: {str(e)}")
+            return
+        except Exception as e:
+            messagebox.showerror("错误", f"无法读取cookies文件: {str(e)}")
+            return
+
+        # 获取user_agent
+        user_agent = user.get("user_agent", "") or self.config_data.get("default_user_agent", "")
+        if not user_agent:
+            messagebox.showwarning("警告", f"用户 '{username}' 的User Agent未配置")
+            return
+
+        # 获取ibex
+        ibex = user.get("ibex", "")
+        if not ibex:
+            messagebox.showwarning("警告", f"用户 '{username}' 的ibex未配置")
+            return
+
+        # 执行刷新（网络请求，保持与其它检测按钮一致的同步方式）
+        try:
+            success, cookies_new, message = refresh_cookies(user_agent, cookies, ibex)
+        except Exception as e:
+            messagebox.showerror("错误", f"刷新cookies时出错: {str(e)}", icon='error')
+            return
+
+        if not success:
+            messagebox.showerror("刷新失败", f"用户 '{username}' 刷新cookies失败:\n{message}", icon='error')
+            return
+
+        # 写回cookies文件
+        try:
+            with open(cookies_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies_new, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror("错误", f"cookies文件写入失败: {str(e)}")
+            return
+
+        # 更新上次刷新时间并保存配置
+        user["last_cookies_refresh_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        user.setdefault("cookies_refresh_interval_days", 20)
+        self.save_users_config()
+        self.refresh_user_list()
+
+        messagebox.showinfo("成功", f"用户 '{username}' cookies刷新成功", icon='info')
 
     def readtime_report_for_selected_user(self):
         """对选中用户进行阅读时长上报（仅批量生成）"""
@@ -1098,6 +1185,9 @@ class ConfigEditor:
                     "ibex": ibex,
                     "cookies_file": cookies_file
                 })
+                # 兼容旧配置：补齐cookies刷新相关字段
+                user.setdefault("cookies_refresh_interval_days", 20)
+                user.setdefault("last_cookies_refresh_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 break
         
         # 如果不存在，创建新用户
@@ -1109,6 +1199,8 @@ class ConfigEditor:
                 "ibex": ibex,
                 "usertype": "captcha",  # 默认值
                 "tokenid": "",  # 可能需要从其他地方获取
+                "cookies_refresh_interval_days": 20,  # 默认20天
+                "last_cookies_refresh_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "tasks": {
                     "签到任务": True,
                     "激励碎片任务": True,
@@ -1983,6 +2075,14 @@ class ConfigEditor:
             row=4, column=1, sticky="ew", padx=5)
         ttk.Label(form_frame, text="* 用于自动过图形验证，可在我的网站或者咸鱼上获取", 
                 style="Help.TLabel").grid(row=4, column=2, sticky="w")
+
+        # ====cookies自动刷新间隔====
+        ttk.Label(form_frame, text="cookies自动刷新间隔:").grid(row=8, column=0, sticky="w")
+        cookies_interval_var = tk.StringVar(value="20")
+        ttk.Spinbox(form_frame, from_=1, to=365, textvariable=cookies_interval_var, width=10).grid(
+            row=8, column=1, sticky="w", padx=5)
+        ttk.Label(form_frame, text="* 单位：天，默认20天，主程序到期间隔后自动刷新cookies",
+                style="Help.TLabel").grid(row=8, column=2, sticky="w")
         
         # ====登录方式选择====
         login_frame = ttk.LabelFrame(form_frame, text="登录方式")
@@ -2640,12 +2740,23 @@ class ConfigEditor:
             # 检查用户是否已存在（通过登录界面创建）
             existing_user = next((u for u in self.users_data if u["username"] == username), None)
             
+            # 校验cookies自动刷新间隔
+            try:
+                cookies_interval_days = int(cookies_interval_var.get())
+                if cookies_interval_days <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                messagebox.showerror("错误", "cookies自动刷新间隔必须为正整数（天）")
+                return
+
             # 创建基本用户数据
             user_data = {
                 "username": username,
                 "cookies_file": f"cookies/{username}.json",
                 "usertype": usertype_var.get(),
                 "tokenid": tokenid_var.get(),
+                "cookies_refresh_interval_days": cookies_interval_days,
+                "last_cookies_refresh_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "tasks": {task: var.get() for task, var in task_vars.items()},
                 "readtime_task_config": readtime_config_var,
                 "push_services": [
@@ -2659,9 +2770,11 @@ class ConfigEditor:
                 existing_user.update({
                     "usertype": user_data["usertype"],
                     "tokenid": user_data["tokenid"],
+                    "cookies_refresh_interval_days": user_data["cookies_refresh_interval_days"],
                     "tasks": user_data["tasks"],
                     "push_services": user_data["push_services"]
                 })
+                existing_user.setdefault("last_cookies_refresh_time", user_data["last_cookies_refresh_time"])
                 message = "用户配置已更新（登录信息已保留）"
             else:
                 # 用户不存在，创建新用户
@@ -2729,6 +2842,14 @@ class ConfigEditor:
             row=4, column=1, sticky="ew", padx=5)
         ttk.Label(form_frame, text="* 用于自动过图形验证，可在我的网站或者咸鱼上获取", 
                 style="Help.TLabel").grid(row=4, column=2, sticky="w")
+
+        # ====cookies自动刷新间隔====
+        ttk.Label(form_frame, text="cookies自动刷新间隔:").grid(row=8, column=0, sticky="w")
+        cookies_interval_var = tk.StringVar(value=str(user.get("cookies_refresh_interval_days", 20)))
+        ttk.Spinbox(form_frame, from_=1, to=365, textvariable=cookies_interval_var, width=10).grid(
+            row=8, column=1, sticky="w", padx=5)
+        ttk.Label(form_frame, text="* 单位：天，默认20天，主程序到期间隔后自动刷新cookies",
+                style="Help.TLabel").grid(row=8, column=2, sticky="w")
         
         # ====登录方式选择====
         login_frame = ttk.LabelFrame(form_frame, text="登录方式")
@@ -3421,12 +3542,22 @@ class ConfigEditor:
                     messagebox.showerror("错误", f"无法更新Cookies文件：{str(e)}")
                     return
 
+            # 校验cookies自动刷新间隔
+            try:
+                cookies_interval_days = int(cookies_interval_var.get())
+                if cookies_interval_days <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                messagebox.showerror("错误", "cookies自动刷新间隔必须为正整数（天）")
+                return
+
             # 更新用户数据
             edited_user = {
                 "username": new_username,
                 "cookies_file": new_cookies_file,
                 "usertype": self.usertype_var.get(),
                 "tokenid": self.tokenid_var.get(),
+                "cookies_refresh_interval_days": cookies_interval_days,
                 "tasks": {task: var.get() for task, var in task_vars.items()},
                 "readtime_task_config": readtime_config,
                 "push_services": [
@@ -3437,6 +3568,9 @@ class ConfigEditor:
 
             # self.users_data[index] = edited_user
             self.users_data[index].update(edited_user)
+            # 上次刷新时间不由用户配置：已有则保留，缺失则初始化为当前时间
+            self.users_data[index].setdefault(
+                "last_cookies_refresh_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             self.refresh_user_list()
             dialog.destroy()
             self.save_users_config() # 实时保存用户配置更改 也可以删了，就会变成只有主界面的保存按钮才能保存

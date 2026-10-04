@@ -185,6 +185,99 @@ def check_login_risk(user_agent, cookies, ibex):
         logger.error(f"登录检测异常: {e}")
         return False
 
+def refresh_cookies(user_agent, cookies, ibex):
+    '''刷新cookies（重新登录 druidv6 获取新的 cmfuToken）
+
+    返回 (success: bool, cookies_new: dict|None, message: str)
+    '''
+    user_data = solve_user(user_agent, cookies)
+    if not user_data:
+        logger.error('无法处理用户数据，请检查Cookies')
+        return False, None, '无法处理用户数据，请检查Cookies'
+
+    version = user_data.get('version', '')
+    versioncode = user_data.get('versioncode', '')
+    qid = user_data.get('qid', '')
+    QDInfo = user_data.get('QDInfo', '')
+    userid = user_data.get('userid', '')
+
+    if not ibex:
+        logger.error('缺少ibex，无法刷新cookies')
+        return False, None, '缺少ibex，无法刷新cookies'
+
+    url = 'https://druidv6.if.qidian.com/argus/api/v2/user/login'
+    data = {
+        'fromSource': "1000009",
+        'loginfrom': "0",
+        'areaId': cookies.get('areaId'),
+        'isFirstRegister': "false",
+        'ywguid': cookies.get('ywguid'),
+        'appId': cookies.get('appId'),
+        'ywkey': cookies.get('ywkey'),
+    }
+
+    ts = str(int(time.time() * 1000))
+    data_encrypt = data.copy()
+    QDSign = getQDSign(ts, data_encrypt, version, qid, userid=userid)
+    QDInfo_header = getQDInfo_byQDInfo(ts, QDInfo)
+    borgus = getborgus(ts, data_encrypt, versioncode, qid)
+    ibex_header = getibex_byibex(ts, ibex)
+
+    headers = {
+        'User-Agent': user_agent,
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip",
+        'Host': 'druidv6.if.qidian.com',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'tstamp': ts,
+        'QDInfo': QDInfo_header,
+        'borgus': borgus,
+        'ibex': ibex_header,
+        'QDSign': QDSign,
+    }
+
+    # 登录请求使用 bar=44，并使用全量cookies
+    req_cookies = cookies.copy()
+    req_cookies.update({
+        'lang': "cn",
+        'mode': "normal",
+        'bar': "44",
+        'qid': qid,
+        'QDInfo': QDInfo_header,
+    })
+
+    try:
+        response = requests.post(url, data=data, cookies=req_cookies, headers=headers, timeout=30)
+        res_text = response.text
+        logger.info(f"[refresh_cookies] 登录响应: {res_text}")
+        result = response.json()
+    except Exception as e:
+        logger.error(f"[refresh_cookies] 请求异常: {e}")
+        return False, None, f'请求异常: {str(e)}'
+
+    if result.get('Result') not in (0, "0"):
+        message = result.get('Message', '') or '登录失败'
+        logger.error(f"[refresh_cookies] 登录失败: {result}")
+        return False, None, f'登录失败: {message}'
+
+    login_result = result.get('Data', {}).get('LoginResult')
+    if not login_result:
+        logger.error("[refresh_cookies] 返回的LoginResult为空")
+        return False, None, '返回的LoginResult为空'
+
+    cmfuToken = str(login_result.get('CmfuToken'))
+    if not cmfuToken or cmfuToken == 'None':
+        logger.error("[refresh_cookies] 未获取到新的cmfuToken")
+        return False, None, '未获取到新的cmfuToken'
+
+    cookies_new = cookies.copy()
+    cookies_new.update({
+        'cmfuToken': cmfuToken,
+        'QDInfo': getQDInfo_byQDInfo(str(int(time.time() * 1000)), QDInfo),
+    })
+    logger.info("[refresh_cookies] cookies刷新成功")
+    return True, cookies_new, 'cookies刷新成功'
+
 def search_books_simple(user_agent, cookies, ibex, keyword, count="20"):
     '''搜索书籍'''
     user_data = solve_user(user_agent, cookies)

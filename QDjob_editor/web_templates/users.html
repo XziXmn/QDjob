@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}用户 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<div class="row between">
+  <div>
+    <h1 class="page-title">用户管理</h1>
+    <p class="page-desc">最多支持 {{ 3 }} 个用户。点击用户进入详情配置登录、任务、推送与阅读上报。</p>
+  </div>
+  <button class="btn primary" id="add-user">+ 添加用户</button>
+</div>
+
+<div class="card">
+  <div id="page-status"></div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>用户名</th><th>Cookies</th><th>设备</th><th>任务</th><th>推送</th><th>上次刷新</th><th>操作</th></tr>
+      </thead>
+      <tbody id="user-tbody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadUsers() {
+  const res = await UI.api('GET', '/api/users');
+  if (!res.ok) return;
+  const tbody = UI.qs('#user-tbody');
+  const users = res.data.users;
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">暂无用户</td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map(function (u) {
+    const cookieTag = u.cookies_status === '账号已配置'
+      ? '<span class="tag ok">已配置</span>' : '<span class="tag warn">' + UI.escapeHtml(u.cookies_status) + '</span>';
+    const devTag = u.has_device ? '<span class="tag info">已有</span>' : '<span class="tag mute">无</span>';
+    return '<tr>' +
+      '<td><a href="/users/' + encodeURIComponent(u.username) + '">' + UI.escapeHtml(u.username) + '</a></td>' +
+      '<td>' + cookieTag + '</td>' +
+      '<td>' + devTag + '</td>' +
+      '<td>' + u.tasks_enabled + '</td>' +
+      '<td>' + u.push_services_count + '</td>' +
+      '<td class="muted">' + (u.last_cookies_refresh_time || '从未') + '</td>' +
+      '<td><div class="row">' +
+        '<button class="btn sm" data-act="check-user" data-u="' + UI.escapeHtml(u.username) + '">检测tokenid</button>' +
+        '<button class="btn sm" data-act="check-login" data-u="' + UI.escapeHtml(u.username) + '">检测登录状态</button>' +
+        '<button class="btn sm" data-act="check-risk" data-u="' + UI.escapeHtml(u.username) + '">检测账号风险</button>' +
+        '<button class="btn sm" data-act="refresh" data-u="' + UI.escapeHtml(u.username) + '">刷新Cookies</button>' +
+        '<button class="btn sm danger" data-act="delete" data-u="' + UI.escapeHtml(u.username) + '">删除</button>' +
+      '</div></td>' +
+    '</tr>';
+  }).join('');
+}
+
+const ACT_LABEL = {
+  'check-user': '检测tokenid',
+  'check-login': '检测登录状态',
+  'check-risk': '检测账号风险',
+  'refresh': '刷新Cookies',
+};
+const ACT_KIND = {
+  'check-user': 'user', 'check-login': 'login', 'check-risk': 'risk', 'refresh': 'refresh',
+};
+
+function renderPageStatus(res, username, kind) {
+  const d = res.data || {};
+  const t = '#page-status';
+  if (!res.ok) {
+    UI.status(t, 'err', '用户「' + username + '」：' + (res.message || '操作失败'));
+    return;
+  }
+  if (kind === 'user') {
+    UI.status(t, 'ok', '用户「' + username + '」tokenid 验证成功',
+      '有效期：<b>' + UI.escapeHtml(String(d.expire_time || '-')) + '</b>　剩余调用次数：<b>' +
+      UI.escapeHtml(String(d.remaining_calls !== undefined ? d.remaining_calls : '-')) + '</b>');
+    return;
+  }
+  if (kind === 'login') {
+    UI.status(t, 'ok', '用户「' + username + '」基础登录状态正常',
+      UI.escapeHtml(d.message || '') + '<br>提示：仅基础 cookies 有效性；风控检测请点击「检测账号风险」。');
+    return;
+  }
+  if (kind === 'risk') {
+    const lvl = d.level;
+    if (lvl === 0 || lvl === undefined) {
+      UI.status(t, 'ok', '用户「' + username + '」无风控', UI.escapeHtml(d.message || ''));
+      return;
+    }
+    let detail = UI.escapeHtml(d.message || '');
+    if (d.ban_message) detail += '<br>服务端提示：' + UI.escapeHtml(d.ban_message);
+    if (d.captcha_url) {
+      detail += '<br>验证码地址：<code>' + UI.escapeHtml(d.captcha_url) + '</code>' +
+        (d.captcha_aid ? '（AId ' + UI.escapeHtml(String(d.captcha_aid)) + '）' : '');
+    }
+    const type = (lvl === 1) ? 'err' : 'warn';
+    UI.status(t, type, '用户「' + username + '」' + (d.level_name || '检测到风控') +
+      '（BanId=' + UI.escapeHtml(String(lvl)) + '）', detail);
+    return;
+  }
+  UI.status(t, 'ok', '用户「' + username + '」：' + (res.message || '完成'));
+}
+
+document.addEventListener('click', async function (e) {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const username = btn.dataset.u;
+  const act = btn.dataset.act;
+  const label = ACT_LABEL[act] || '操作';
+
+  if (act === 'delete') {
+    if (await UI.confirmDialog('确定删除用户「' + username + '」吗？将同时删除其 cookies 与设备信息。', '删除用户')) {
+      const res = await UI.api('DELETE', '/api/users/' + encodeURIComponent(username));
+      if (res.ok) { UI.toast('已删除', 'ok'); UI.clearStatus('#page-status'); loadUsers(); }
+    }
+    return;
+  }
+
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  UI.status('#page-status', 'info', '用户「' + username + '」' + label + '中…');
+
+  let res;
+  if (act === 'refresh') {
+    res = await UI.api('POST', '/api/users/' + encodeURIComponent(username) + '/refresh',
+      {}, { silent: true });
+  } else {
+    res = await UI.api('POST', '/api/users/' + encodeURIComponent(username) + '/check',
+      { type: ACT_KIND[act] }, { silent: true });
+  }
+
+  btn.disabled = false; btn.textContent = label;
+  renderPageStatus(res, username, ACT_KIND[act] || act);
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+  if (act === 'refresh' && res.ok) loadUsers();
+});
+
+UI.qs('#add-user').addEventListener('click', function () {
+  UI.openModal(
+    '<h3>添加用户</h3>' +
+    '<div class="field"><label>用户名</label><input type="text" id="nu-username" placeholder="2-20位，中文/字母/数字/下划线"></div>' +
+    '<div class="field"><label>tokenid</label><input type="text" id="nu-tokenid" placeholder="用于自动过图形验证，可留空"></div>' +
+    '<div class="field"><label>cookies 自动刷新间隔（天）</label><input type="number" id="nu-interval" value="20" min="1"></div>' +
+    '<div class="modal-actions"><button class="btn" id="nu-cancel">取消</button><button class="btn primary" id="nu-ok">创建</button></div>'
+  );
+  UI.qs('#nu-cancel').onclick = UI.closeModal;
+  UI.qs('#nu-ok').onclick = async function () {
+    const payload = {
+      username: UI.qs('#nu-username').value.trim(),
+      tokenid: UI.qs('#nu-tokenid').value.trim(),
+      cookies_refresh_interval_days: parseInt(UI.qs('#nu-interval').value, 10) || 20,
+      usertype: 'captcha',
+    };
+    const res = await UI.api('POST', '/api/users', payload);
+    if (res.ok) { UI.closeModal(); UI.toast('用户创建成功', 'ok'); loadUsers(); }
+  };
+});
+
+loadUsers();
+</script>
+{% endblock %}

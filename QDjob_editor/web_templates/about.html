@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}关于 · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<h1 class="page-title">关于</h1>
+<p class="page-desc">项目信息、作者与相关链接。</p>
+
+<div class="card">
+  <div class="card-title">ℹ️ 项目信息</div>
+  <table class="data">
+    <tbody>
+      <tr><th style="width:120px">项目</th><td>{{ meta.project }}</td></tr>
+      <tr><th>作者</th><td>{{ meta.author }}</td></tr>
+      <tr><th>版本</th><td>{{ meta.version }}</td></tr>
+      <tr><th>GitHub</th><td><a href="{{ meta.github }}" target="_blank" rel="noopener">{{ meta.github }}</a></td></tr>
+      <tr><th>Telegram</th><td><a href="{{ meta.telegram }}" target="_blank" rel="noopener">{{ meta.telegram }}</a></td></tr>
+      <tr><th>咸鱼</th><td><a href="{{ meta.xianyu }}" target="_blank" rel="noopener">{{ meta.xianyu }}</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-title">📢 声明</div>
+  <p>{{ meta.disclaimer }}</p>
+  <p class="muted">{{ meta.tokenid_notice }}</p>
+</div>
+{% endblock %}

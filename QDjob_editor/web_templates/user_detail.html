@@ -1,0 +1,827 @@
+{% extends "base.html" %}
+{% block title %}{{ username }} · QDjob 配置编辑器{% endblock %}
+
+{% block content %}
+<div class="row between" id="user-root" data-username="{{ username }}">
+  <div>
+    <h1 class="page-title">用户：{{ username }}</h1>
+    <p class="page-desc">配置登录方式、任务、推送与阅读时长上报。</p>
+  </div>
+  <a class="btn" href="{{ url_for('page_users') }}">← 返回用户列表</a>
+</div>
+
+<div class="tabs">
+  <button class="tab active" data-tab="basic">基本信息</button>
+  <button class="tab" data-tab="login">登录</button>
+  <button class="tab" data-tab="tasks">任务</button>
+  <button class="tab" data-tab="push">推送服务</button>
+  <button class="tab" data-tab="readtime">阅读上报</button>
+</div>
+
+<!-- ==================== 基本信息 ==================== -->
+<section id="tab-basic">
+  <div class="card">
+    <div class="grid cols-2">
+      <div class="field"><label>用户名</label><input type="text" id="u-username"></div>
+      <div class="field"><label>用户类型</label><input type="text" id="u-usertype" value="captcha" readonly></div>
+      <div class="field"><label>tokenid（可选）</label><input type="text" id="u-tokenid" placeholder="用于自动过图形验证，可在咸鱼获取"></div>
+      <div class="field"><label>cookies 自动刷新间隔（天）</label><input type="number" id="u-interval" min="1" value="20"></div>
+    </div>
+    <!-- <p class="help muted">User Agent 与 ibex 属于登录凭据，请到「登录」页的“手动填写 Cookies”中配置。</p> -->
+    <div class="btn-row">
+      <button class="btn primary" id="save-basic">保存</button>
+      <button class="btn danger" id="delete-user">删除用户</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🔎 状态检测</div>
+    <div class="btn-row">
+      <button class="btn" id="check-user">检测 tokenid</button>
+      <button class="btn" id="check-login">检测登录状态</button>
+      <button class="btn" id="check-risk">检测账号风险</button>
+      <button class="btn" id="refresh-cookies">刷新 Cookies</button>
+    </div>
+    <p class="help muted mt-8">
+      · <strong>检测 tokenid</strong>：验证 tokenid 的有效期与剩余调用次数（旧版“检测令牌”）<br>
+      · <strong>检测登录状态</strong>：<b>仅</b>检测基础 cookies 有效性（用户资料接口返回昵称）<br>
+      · <strong>检测账号风险</strong>：检测更全面——除基础有效性外，还会检测福利中心接口与账号风控等级（BanId）<br>
+      · <strong>刷新 Cookies</strong>：重新登录 druidv6 获取新的 cmfuToken
+    </p>
+    <div id="check-status"></div>
+  </div>
+</section>
+
+<!-- ==================== 登录 ==================== -->
+<section id="tab-login" class="hidden">
+  <!-- 手动填写 Cookies：当前主要使用方式，置顶 -->
+  <div class="card">
+    <div class="card-title">✍️ 手动填写 Cookies <span class="hint">当前主要使用方式</span></div>
+    <div class="field"><label>User Agent（必填）</label><input type="text" id="m-ua"></div>
+    <div class="field"><label>ibex（必填）</label><input type="text" id="m-ibex"></div>
+    <div class="field"><label>Cookies（JSON）</label><textarea id="m-cookies" rows="10"></textarea></div>
+    <div class="field">
+      <label>Cookies 转换器 <span class="hint">粘贴抓包得到的 <code>appId=xxx; b=xxx;</code>，一键转 JSON</span></label>
+      <textarea id="m-raw" rows="3" placeholder="appId=xxx; areaId=xxx; lang=xxx;"></textarea>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="save-manual">保存 Cookies</button>
+      <button class="btn" id="convert-cookies">转换并填入</button>
+      <button class="btn" id="reload-manual">重新加载</button>
+    </div>
+    <div id="manual-status"></div>
+  </div>
+
+  <!-- 登录设备（统一入口：来源 + 版本 + 准备 + 查看/编辑） -->
+  <div class="card">
+    <div class="card-title">🧬 登录设备 <span class="hint">真机设备可降低风控</span></div>
+    <p class="help muted">下方「手机验证码登录 / 账号密码登录」会使用这里准备的设备；「手动填写 Cookies」不受影响。</p>
+    <div class="grid cols-2">
+      <div class="field">
+        <label>设备来源</label>
+        <select id="dev-source">
+          <option value="">随机生成设备</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>软件版本（与设备无关）</label>
+        <select id="dev-version"></select>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="dev-prepare">准备登录设备</button>
+      <a class="btn" href="{{ url_for('page_devices') }}">管理真实设备</a>
+    </div>
+    <div id="dev-status"></div>
+
+    <details class="advanced">
+      <summary>查看 / 编辑当前设备信息（JSON，高级）</summary>
+      <div class="field"><textarea id="d-device" rows="8" placeholder="暂无设备信息"></textarea></div>
+      <div class="btn-row">
+        <button class="btn" id="d-load">加载已保存</button>
+        <button class="btn primary" id="d-save">保存到该用户</button>
+      </div>
+      <p class="help muted mt-8">“保存到该用户”会把当前 JSON 写入该用户的设备文件（后续密码登录默认使用）。</p>
+    </details>
+  </div>
+
+  <!-- 手机验证码登录：受风控影响，仍可正常使用 -->
+  <div class="card">
+    <div class="card-title">📱 手机验证码登录 <span class="tag warn">暂不可用</span></div>
+    <p class="help muted">受风控策略影响，该方式成功率不稳定：<strong>登录流程本身可正常执行</strong>，但登录成功后获取的 cookies 可能无法访问部分接口（大部分接口仍可用）。如遇问题，请改用上方“手动填写 Cookies”。</p>
+    <div class="grid cols-2">
+      <div class="field"><label>手机号</label><input type="text" id="phone" placeholder="请输入手机号"></div>
+      <div class="field"><label>验证码</label><input type="text" id="phone-code" placeholder="收到的短信验证码"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="send-code">发送验证码</button>
+      <button class="btn primary" id="phone-login">登录</button>
+    </div>
+    <div id="phone-status"></div>
+  </div>
+
+  <!-- 账号密码登录：受风控影响，仍可正常使用 -->
+  <div class="card">
+    <div class="card-title">🔑 账号密码登录 <span class="tag warn">暂不可用</span></div>
+    <p class="help muted">受风控策略影响，该方式成功率不稳定：流程可正常执行，但登录成功后获取的 cookies 可能无法访问部分接口（大部分接口仍可用）。本方式需先通过手机验证码登录生成设备信息。如遇问题，请改用“手动填写 Cookies”。</p>
+    <div class="grid cols-2">
+      <div class="field"><label>账号</label><input type="text" id="acc-account"></div>
+      <div class="field"><label>密码</label><input type="password" id="acc-password"></div>
+    </div>
+    <div class="btn-row"><button class="btn primary" id="pwd-login">登录</button></div>
+    <div id="pwd-status"></div>
+  </div>
+</section>
+
+<!-- ==================== 任务 ==================== -->
+<section id="tab-tasks" class="hidden">
+  <div class="card">
+    <div class="card-title">✅ 任务开关</div>
+    <div class="checkbox-grid" id="task-grid"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">📚 阅读时长任务配置 <span class="hint">定时任务使用的书籍与时长</span></div>
+    <div class="field">
+      <label>书籍 ID 列表（每行一个或用逗号分隔）</label>
+      <textarea id="rt-books" rows="6" placeholder="1036010291&#10;1042256511"></textarea>
+    </div>
+    <div class="grid cols-3">
+      <div class="field"><label>每章最短(分钟)</label><input type="number" id="rt-min" min="1" value="5"></div>
+      <div class="field"><label>每章最长(分钟)</label><input type="number" id="rt-max" min="1" value="10"></div>
+      <div class="field"><label>目标总时长(分钟)</label><input type="number" id="rt-total" min="1" value="120"></div>
+    </div>
+    <div class="btn-row"><button class="btn primary" id="save-tasks">保存任务配置</button></div>
+  </div>
+</section>
+
+<!-- ==================== 推送服务 ==================== -->
+<section id="tab-push" class="hidden">
+  <div class="card">
+    <div class="row between">
+      <div class="card-title" style="margin:0">🔔 推送服务</div>
+      <button class="btn primary sm" id="add-push">+ 添加推送</button>
+    </div>
+    <div class="grid cols-2 mt-16" id="push-list"></div>
+  </div>
+</section>
+
+<!-- ==================== 阅读上报 ==================== -->
+<section id="tab-readtime" class="hidden">
+  <div class="card">
+    <div class="card-title">📖 阅读时长上报</div>
+    <div class="row">
+      <input type="text" id="r-bookid" placeholder="书籍ID" style="max-width:220px">
+      <button class="btn" id="r-search">搜索书籍</button>
+      <button class="btn" id="r-chapters">获取章节列表</button>
+    </div>
+    <div class="field mt-8">
+      <label>章节列表（可多选）</label>
+      <div class="table-list">
+        <table class="data">
+          <thead><tr><th style="width:40px"><input type="checkbox" id="chk-all"></th><th>章节名称</th><th>章节ID</th></tr></thead>
+          <tbody id="chapter-tbody"><tr><td colspan="3" class="muted">请先获取章节列表</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="grid cols-3">
+      <div class="field"><label>每章最短(分钟)</label><input type="number" id="r-min" value="5" min="1"></div>
+      <div class="field"><label>每章最长(分钟)</label><input type="number" id="r-max" value="10" min="1"></div>
+      <div class="field"><label>最终结束时间</label><input type="text" id="r-end" placeholder="YYYY-MM-DD HH:MM:SS"></div>
+    </div>
+    <div class="btn-row"><button class="btn primary" id="r-build">批量添加记录</button></div>
+  </div>
+
+  <div class="card">
+    <div class="row between">
+      <div class="card-title" style="margin:0">待上报列表 <span class="hint" id="r-total"></span></div>
+      <button class="btn danger sm" id="r-clear">清空</button>
+    </div>
+    <div class="table-wrap mt-8">
+      <table class="data">
+        <thead><tr><th>书籍ID</th><th>章节ID</th><th>时长(分)</th><th>开始</th><th>结束</th></tr></thead>
+        <tbody id="record-tbody"><tr><td colspan="5" class="muted">暂无记录</td></tr></tbody>
+      </table>
+    </div>
+    <div class="btn-row mt-16"><button class="btn primary" id="r-submit">确认上报</button></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const USERNAME = document.getElementById('user-root').dataset.username;
+const META = { task_names: [], push_service_types: [] };
+let currentUser = null;
+let deviceInfo = null;
+let records = [];
+let chapters = [];
+
+// ---------- Tab 切换 ----------
+UI.qsa('.tab').forEach(function (tab) {
+  tab.addEventListener('click', function () {
+    UI.qsa('.tab').forEach(function (t) { t.classList.remove('active'); });
+    tab.classList.add('active');
+    ['basic', 'login', 'tasks', 'push', 'readtime'].forEach(function (name) {
+      UI.qs('#tab-' + name).classList.toggle('hidden', name !== tab.dataset.tab);
+    });
+  });
+});
+
+// ---------- 加载用户 ----------
+async function loadUser() {
+  const res = await UI.api('GET', '/api/users/' + encodeURIComponent(USERNAME));
+  if (!res.ok) { UI.toast(res.message, 'err'); return; }
+  currentUser = res.data;
+  const u = currentUser;
+  UI.qs('#u-username').value = u.username || '';
+  UI.qs('#u-usertype').value = u.usertype || 'captcha';
+  UI.qs('#u-tokenid').value = u.tokenid || '';
+  UI.qs('#u-interval').value = u.cookies_refresh_interval_days || 20;
+  UI.qs('#m-ua').value = u.user_agent || '';
+  UI.qs('#m-ibex').value = u.ibex || '';
+  UI.qs('#m-cookies').value = JSON.stringify(u.cookies || {}, null, 2);
+
+  const rtc = u.readtime_task_config || {};
+  UI.qs('#rt-books').value = (rtc.book_ids || []).join('\n');
+  UI.qs('#rt-min').value = rtc.min_duration || 5;
+  UI.qs('#rt-max').value = rtc.max_duration || 10;
+  UI.qs('#rt-total').value = rtc.total_duration || 120;
+
+  renderTasks(u.tasks || {});
+  renderPush(u.push_services || []);
+  UI.qs('#r-end').value = defaultEndStr();
+  loadDevice();
+}
+
+function defaultEndStr() {
+  const d = new Date(Date.now() - 3000);
+  const p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+// ---------- 基本信息 ----------
+UI.qs('#save-basic').addEventListener('click', async function () {
+  const res = await UI.api('PUT', '/api/users/' + encodeURIComponent(USERNAME), {
+    username: UI.qs('#u-username').value.trim(),
+    usertype: UI.qs('#u-usertype').value,
+    tokenid: UI.qs('#u-tokenid').value.trim(),
+    cookies_refresh_interval_days: parseInt(UI.qs('#u-interval').value, 10) || 20,
+  });
+  if (res.ok) {
+    UI.toast('用户信息已保存', 'ok');
+    if (res.data && res.data.username && res.data.username !== USERNAME) {
+      window.location.href = '/users/' + encodeURIComponent(res.data.username);
+    } else { loadUser(); }
+  }
+});
+
+async function doCheck(kind) {
+  const labels = { user: '检测 tokenid', login: '检测登录状态', risk: '检测账号风险' };
+  UI.status('#check-status', 'info', (labels[kind] || '检测') + '中…');
+  const res = await UI.api('POST', '/api/users/' + encodeURIComponent(USERNAME) + '/check',
+    { type: kind }, { silent: true });
+  const d = res.data || {};
+
+  if (!res.ok) {
+    UI.status('#check-status', 'err', res.message || '检测失败');
+    UI.toast(res.message || '检测失败', 'err');
+    return;
+  }
+
+  if (kind === 'user') {
+    UI.status('#check-status', 'ok', 'tokenid 验证成功',
+      '有效期：<b>' + UI.escapeHtml(String(d.expire_time || '-')) + '</b>　剩余调用次数：<b>' +
+      UI.escapeHtml(String(d.remaining_calls !== undefined ? d.remaining_calls : '-')) + '</b>');
+    UI.toast('tokenid 验证成功', 'ok');
+    return;
+  }
+
+  if (kind === 'login') {
+    UI.status('#check-status', 'ok', '基础登录状态正常（cookies 有效）',
+      UI.escapeHtml(d.message || '') + '<br>提示：这只是基础有效性；风控检测请点击「检测账号风险」。');
+    UI.toast('基础 cookies 有效', 'ok');
+    return;
+  }
+
+  // 风险检测
+  const lvl = d.level;
+  if (lvl === 0 || lvl === undefined) {
+    UI.status('#check-status', 'ok', '无风控', UI.escapeHtml(d.message || ''));
+    UI.toast('无风控', 'ok');
+    return;
+  }
+  let detail = UI.escapeHtml(d.message || '');
+  if (d.ban_message) detail += '<br>服务端提示：' + UI.escapeHtml(d.ban_message);
+  if (d.captcha_url) {
+    detail += '<br>验证码地址：<code>' + UI.escapeHtml(d.captcha_url) + '</code>' +
+      (d.captcha_aid ? '（AId ' + UI.escapeHtml(String(d.captcha_aid)) + '）' : '');
+  }
+  const type = (lvl === 1) ? 'err' : 'warn';
+  UI.status('#check-status', type, (d.level_name || '检测到风控') + '（BanId=' + UI.escapeHtml(String(lvl)) + '）', detail);
+  UI.toast('检测到风控：' + (d.level_name || lvl), type === 'err' ? 'err' : 'warn');
+}
+UI.qs('#check-user').addEventListener('click', function () { doCheck('user'); });
+UI.qs('#check-login').addEventListener('click', function () { doCheck('login'); });
+UI.qs('#check-risk').addEventListener('click', function () { doCheck('risk'); });
+
+UI.qs('#refresh-cookies').addEventListener('click', async function () {
+  const btn = UI.qs('#refresh-cookies');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 刷新中';
+  UI.status('#check-status', 'info', '刷新 cookies 中…');
+  const res = await UI.api('POST', '/api/users/' + encodeURIComponent(USERNAME) + '/refresh',
+    {}, { silent: true });
+  btn.disabled = false; btn.textContent = '刷新 Cookies';
+  UI.status('#check-status', res.ok ? 'ok' : 'err', res.message);
+  UI.toast(res.message, res.ok ? 'ok' : 'err');
+  if (res.ok) loadUser();
+});
+
+UI.qs('#delete-user').addEventListener('click', async function () {
+  if (!await UI.confirmDialog('确定删除用户「' + USERNAME + '」吗？', '删除用户')) return;
+  const res = await UI.api('DELETE', '/api/users/' + encodeURIComponent(USERNAME));
+  if (res.ok) { UI.toast('已删除', 'ok'); setTimeout(function () { window.location.href = '/users'; }, 600); }
+});
+
+// ==================== 登录 ====================
+let phoneSessionKey = '';
+
+// 登录成功后的统一处理：内联提示 + Toast + 跳转到任务执行页
+function afterLoginSuccess(statusSel, message) {
+  UI.status(statusSel, 'ok', message, '正在跳转到「任务执行」页面…');
+  UI.toast(message, 'ok');
+  setTimeout(function () { window.location.href = '/run'; }, 1200);
+}
+
+UI.qs('#send-code').addEventListener('click', async function () {
+  const phone = UI.qs('#phone').value.trim();
+  if (!phone) { UI.toast('请输入手机号', 'warn'); return; }
+  if (!deviceInfo) { UI.toast('请先点击“获取随机设备信息”', 'warn'); return; }
+  const btn = UI.qs('#send-code');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  let res = await UI.api('POST', '/api/login/phone/sendcode', {
+    username: USERNAME, phone: phone, device: deviceInfo,
+  }, { silent: true });
+  if (res.ok && res.data && res.data.status === 'captcha') {
+    btn.innerHTML = '<span class="spinner"></span> 验证码校验';
+    const cap = await UI.solveCaptcha();
+    if (!cap) { btn.disabled = false; btn.textContent = '发送验证码'; UI.toast('图形验证未通过', 'err'); return; }
+    res = await UI.api('POST', '/api/login/phone/sendcode', {
+      username: USERNAME, phone: phone, device: deviceInfo,
+      session_key: res.data.session_key, randstr: cap.randstr, ticket: cap.ticket,
+    }, { silent: true });
+  }
+  btn.disabled = false; btn.textContent = '发送验证码';
+  if (res.ok && res.data) {
+    phoneSessionKey = res.data.session_key || '';
+    UI.status('#phone-status', 'ok', res.message, '请查收短信验证码，随后点击「登录」。');
+    UI.toast(res.message, 'ok');
+  } else {
+    UI.status('#phone-status', 'err', res.message || '发送失败');
+    UI.toast(res.message || '发送失败', 'err');
+  }
+});
+
+UI.qs('#phone-login').addEventListener('click', async function () {
+  const phone = UI.qs('#phone').value.trim();
+  const code = UI.qs('#phone-code').value.trim();
+  if (!phone || !code) { UI.toast('请填写手机号与验证码', 'warn'); return; }
+  if (!deviceInfo) {
+    const d = await UI.api('GET', '/api/login/device/' + encodeURIComponent(USERNAME), undefined, { silent: true });
+    if (d.ok) deviceInfo = d.data; else { UI.toast('缺少设备信息', 'err'); return; }
+  }
+  const btn = UI.qs('#phone-login');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 登录中';
+  const res = await UI.api('POST', '/api/login/phone/verify', {
+    username: USERNAME, phone: phone, device: deviceInfo,
+    session_key: phoneSessionKey, code: code,
+  });
+  btn.disabled = false; btn.textContent = '登录';
+  if (res.ok) { afterLoginSuccess('#phone-status', '手机验证码登录成功'); }
+  else { UI.status('#phone-status', 'err', res.message || '登录失败'); }
+});
+
+UI.qs('#pwd-login').addEventListener('click', async function () {
+  const account = UI.qs('#acc-account').value.trim();
+  const password = UI.qs('#acc-password').value;
+  if (!account || !password) { UI.toast('请输入账号与密码', 'warn'); return; }
+  const btn = UI.qs('#pwd-login');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 登录中';
+  let res = await UI.api('POST', '/api/login/password', {
+    username: USERNAME, account: account, password: password, device: deviceInfo || undefined,
+  }, { silent: true });
+  if (res.ok && res.data && res.data.status === 'captcha') {
+    btn.innerHTML = '<span class="spinner"></span> 验证码校验';
+    const cap = await UI.solveCaptcha();
+    if (!cap) { btn.disabled = false; btn.textContent = '登录'; UI.toast('图形验证未通过', 'err'); return; }
+    res = await UI.api('POST', '/api/login/password', {
+      username: USERNAME, account: account, password: password, device: deviceInfo || undefined,
+      session_key: res.data.session_key, randstr: cap.randstr, ticket: cap.ticket,
+    }, { silent: true });
+  }
+  btn.disabled = false; btn.textContent = '登录';
+  if (res.ok) { afterLoginSuccess('#pwd-status', '账号密码登录成功'); }
+  else { UI.status('#pwd-status', 'err', res.message || '登录失败'); }
+});
+
+UI.qs('#reload-manual').addEventListener('click', function () { loadUser(); });
+UI.qs('#save-manual').addEventListener('click', async function () {
+  const ua = UI.qs('#m-ua').value.trim();
+  const ibex = UI.qs('#m-ibex').value.trim();
+  if (!ua) { UI.toast('User Agent 为必填项', 'warn'); return; }
+  if (!ibex) { UI.toast('ibex 为必填项', 'warn'); return; }
+  let cookies;
+  try {
+    cookies = JSON.parse(UI.qs('#m-cookies').value || '{}');
+  } catch (e) { UI.toast('Cookies JSON 格式错误: ' + e.message, 'err'); return; }
+  const res = await UI.api('POST', '/api/login/manual', {
+    username: USERNAME,
+    user_agent: ua,
+    ibex: ibex,
+    cookies: cookies,
+  });
+  if (res.ok) {
+    UI.status('#manual-status', 'ok', 'Cookies 已保存', '正在跳转到「任务执行」页面…');
+    UI.toast('Cookies 已保存', 'ok');
+    setTimeout(function () { window.location.href = '/run'; }, 1200);
+  } else {
+    UI.status('#manual-status', 'err', res.message || '保存失败');
+  }
+});
+
+// 内置 Cookies 转换器：原始字符串 -> JSON
+UI.qs('#convert-cookies').addEventListener('click', async function () {
+  const raw = UI.qs('#m-raw').value.trim();
+  if (!raw) { UI.toast('请先粘贴原始 Cookies 字符串', 'warn'); return; }
+  const res = await UI.api('POST', '/api/tools/cookies-convert', { text: raw });
+  if (res.ok) {
+    UI.qs('#m-cookies').value = res.data.json;
+    UI.toast('已转换为 JSON 并填入上方输入框', 'ok');
+  }
+});
+
+// ==================== 设备信息 ====================
+async function loadDevice() {
+  const res = await UI.api('GET', '/api/login/device/' + encodeURIComponent(USERNAME), undefined, { silent: true });
+  if (res.ok) {
+    UI.qs('#d-device').value = JSON.stringify(res.data, null, 2);
+  }
+}
+UI.qs('#d-load').addEventListener('click', function () { loadDevice(); });
+UI.qs('#d-save').addEventListener('click', async function () {
+  let device;
+  try {
+    device = JSON.parse(UI.qs('#d-device').value || '{}');
+  } catch (e) { UI.toast('设备信息 JSON 格式错误: ' + e.message, 'err'); return; }
+  const res = await UI.api('PUT', '/api/login/device/' + encodeURIComponent(USERNAME), { device: device });
+  if (res.ok) {
+    UI.status('#dev-status', 'ok', '已保存到该用户', '后续密码登录会默认使用该设备信息。');
+    UI.toast('设备信息已保存', 'ok');
+  } else {
+    UI.status('#dev-status', 'err', res.message || '保存失败');
+  }
+});
+
+// ==================== 登录设备准备 ====================
+let deviceList = [];
+let versionList = [];
+
+function versionOptionValue(v) {
+  return v.version + '|' + v.versioncode + '|' + (v.sdkversion || '401');
+}
+
+function renderSourceOptions() {
+  const sel = UI.qs('#dev-source');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">随机生成设备</option>' + deviceList.map(function (d) {
+    return '<option value="' + UI.escapeHtml(d.name) + '">' + UI.escapeHtml(d.name) +
+      '（' + UI.escapeHtml(d.brand || '?') + ' ' + UI.escapeHtml(d.model || '?') + '）</option>';
+  }).join('');
+  if (cur) sel.value = cur;
+}
+
+function renderVersionOptions() {
+  const sel = UI.qs('#dev-version');
+  const cur = sel.value;
+  sel.innerHTML = versionList.length ? versionList.map(function (v) {
+    return '<option value="' + UI.escapeHtml(versionOptionValue(v)) + '">' + UI.escapeHtml(v.version) +
+      '（' + UI.escapeHtml(v.versioncode) + ' / sdk ' + UI.escapeHtml(v.sdkversion || '401') + '）</option>';
+  }).join('') : '<option value="">（无版本，请先在“真实设备”页添加）</option>';
+  if (cur) sel.value = cur;
+}
+
+async function loadDeviceOptions() {
+  const res = await UI.api('GET', '/api/devices', undefined, { silent: true });
+  if (!res.ok) return;
+  deviceList = res.data.devices || [];
+  versionList = res.data.versions || [];
+  renderSourceOptions();
+  renderVersionOptions();
+}
+
+function selectedVersion() {
+  const v = UI.qs('#dev-version').value;
+  if (!v) return null;
+  const parts = v.split('|');
+  return { version: parts[0], versioncode: parts[1], sdkversion: parts[2] || '401' };
+}
+
+// 切换真实设备时：默认选中其保存的版本；若版本表没有则自动新增
+UI.qs('#dev-source').addEventListener('change', async function () {
+  const name = this.value;
+  if (!name) {
+    UI.clearStatus('#dev-status');
+    return;
+  }
+  const d = deviceList.find(function (x) { return x.name === name; });
+  if (!d || !d.version) {
+    UI.toast('该设备未记录软件版本，请在下拉框手动选择', 'warn');
+    return;
+  }
+  const v = d.version;
+  const exists = versionList.some(function (x) {
+    return x.version === v.version && x.versioncode === v.versioncode;
+  });
+  if (!exists) {
+    const r = await UI.api('PUT', '/api/versions', {
+      version: v.version, versioncode: v.versioncode, sdkversion: v.sdkversion || '401',
+    });
+    if (r.ok) {
+      versionList = r.data;
+      renderVersionOptions();
+      UI.toast('已自动把版本 ' + v.version + '（' + v.versioncode + '）加入版本表', 'ok');
+    }
+  }
+  UI.qs('#dev-version').value = versionOptionValue(v);
+});
+
+UI.qs('#dev-prepare').addEventListener('click', async function () {
+  const name = UI.qs('#dev-source').value;
+  if (!name) {
+    const res = await UI.api('POST', '/api/login/device', { username: USERNAME });
+    if (res.ok) {
+      deviceInfo = res.data;
+      UI.status('#dev-status', 'ok', '当前登录设备：随机生成');
+      UI.qs('#d-device').value = JSON.stringify(deviceInfo, null, 2);
+      UI.toast('已生成随机设备信息', 'ok');
+    }
+    return;
+  }
+  const ver = selectedVersion();
+  if (!ver) { UI.toast('请先选择软件版本（可在“真实设备”页添加）', 'warn'); return; }
+  const res = await UI.api('POST', '/api/devices/compose', { name: name, version: ver });
+  if (res.ok) {
+    deviceInfo = res.data;
+    UI.status('#dev-status', 'ok', '当前登录设备：' + name,
+      '版本 ' + UI.escapeHtml(ver.version) + '（' + UI.escapeHtml(ver.versioncode) + '）');
+    UI.qs('#d-device').value = JSON.stringify(deviceInfo, null, 2);
+    UI.toast('已根据真实设备与版本准备登录信息', 'ok');
+  }
+});
+
+// ==================== 任务 ====================
+function renderTasks(tasks) {
+  const names = (META.task_names && META.task_names.length) ? META.task_names : Object.keys(tasks);
+  const box = UI.qs('#task-grid');
+  box.innerHTML = names.map(function (name) {
+    const checked = tasks[name] !== false ? 'checked' : '';
+    return '<label class="checkbox"><input type="checkbox" data-task="' + UI.escapeHtml(name) + '" ' + checked + '> ' +
+      UI.escapeHtml(name) + '</label>';
+  }).join('');
+}
+
+UI.qs('#save-tasks').addEventListener('click', async function () {
+  const tasks = {};
+  UI.qsa('#task-grid input[data-task]').forEach(function (c) { tasks[c.dataset.task] = c.checked; });
+  const bookIds = UI.qs('#rt-books').value.split(/[\s,，]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  const payload = {
+    tasks: tasks,
+    readtime_task_config: {
+      book_ids: bookIds,
+      min_duration: parseInt(UI.qs('#rt-min').value, 10) || 5,
+      max_duration: parseInt(UI.qs('#rt-max').value, 10) || 10,
+      total_duration: parseInt(UI.qs('#rt-total').value, 10) || 120,
+    },
+  };
+  const res = await UI.api('PUT', '/api/users/' + encodeURIComponent(USERNAME), payload);
+  if (res.ok) UI.toast('任务配置已保存', 'ok');
+});
+
+// ==================== 推送服务 ====================
+let pushServices = [];
+
+function pushSummary(s) {
+  if (s.type === 'feishu') return 'Webhook: ...' + String(s.webhook_url || '').slice(-24);
+  if (s.type === 'serverchan') return 'SCKEY: ...' + String(s.sckey || '').slice(-12);
+  if (s.type === 'qiwei') return 'Webhook: ...' + String(s.webhook_url || '').slice(-18) +
+    '（用户 ' + (s.userids || []).length + ' / 手机 ' + (s.phoneids || []).length + '）';
+  if (s.type === 'pushplus') return 'Token: ...' + String(s.token || '').slice(-10);
+  return '';
+}
+
+function renderPush(list) {
+  pushServices = (list || []).map(function (s) { const c = Object.assign({}, s); delete c.title; return c; });
+  const box = UI.qs('#push-list');
+  if (!pushServices.length) { box.innerHTML = '<div class="muted">暂无推送服务</div>'; return; }
+  box.innerHTML = pushServices.map(function (s, i) {
+    return '<div class="card" style="margin:0">' +
+      '<div class="row between"><strong>' + UI.escapeHtml(s.type) + '</strong>' +
+      '<button class="btn sm danger" data-push-del="' + i + '">删除</button></div>' +
+      '<div class="muted mt-8" style="font-size:12.5px">' + UI.escapeHtml(pushSummary(s)) + '</div></div>';
+  }).join('');
+}
+
+function pushFieldHtml(id, label, value) {
+  return '<div class="field"><label>' + label + '</label><input type="text" id="' + id + '" value="' +
+    UI.escapeHtml(value || '') + '"></div>';
+}
+
+UI.qs('#add-push').addEventListener('click', function () {
+  UI.openModal(
+    '<h3>添加推送服务</h3>' +
+    '<div class="field"><label>类型</label><select id="p-type">' +
+    '<option value="feishu">feishu 飞书</option>' +
+    '<option value="serverchan">serverchan Server酱</option>' +
+    '<option value="qiwei">qiwei 企业微信</option>' +
+    '<option value="pushplus">pushplus</option></select></div>' +
+    '<div id="p-fields"></div>' +
+    '<div class="modal-actions"><button class="btn" id="p-cancel">取消</button>' +
+    '<button class="btn primary" id="p-ok">添加</button></div>'
+  );
+  function fields() {
+    const t = UI.qs('#p-type').value;
+    let html = '';
+    if (t === 'feishu') {
+      html = pushFieldHtml('p-webhook', 'Webhook URL', '') +
+        '<label class="checkbox"><input type="checkbox" id="p-havesign"> 启用签名校验</label>' +
+        pushFieldHtml('p-secret', '签名密钥', '');
+    } else if (t === 'serverchan') {
+      html = pushFieldHtml('p-sckey', 'SCKEY', '');
+    } else if (t === 'qiwei') {
+      html = pushFieldHtml('p-webhook', 'Webhook URL', '') +
+        pushFieldHtml('p-userids', '用户ID（逗号分隔，@all 表示全体）', '') +
+        pushFieldHtml('p-phoneids', '手机号（逗号分隔）', '');
+    } else if (t === 'pushplus') {
+      html = pushFieldHtml('p-token', 'Token', '') + pushFieldHtml('p-topic', '群组ID（可留空）', '');
+    }
+    UI.qs('#p-fields').innerHTML = html;
+  }
+  UI.qs('#p-type').addEventListener('change', fields);
+  fields();
+  UI.qs('#p-cancel').onclick = UI.closeModal;
+  UI.qs('#p-ok').addEventListener('click', async function () {
+    const t = UI.qs('#p-type').value;
+    let service = { type: t };
+    if (t === 'feishu') {
+      service.webhook_url = UI.qs('#p-webhook').value.trim();
+      if (!service.webhook_url) { UI.toast('Webhook URL 不能为空', 'warn'); return; }
+      service.havesign = UI.qs('#p-havesign').checked;
+      if (service.havesign) service.secret = UI.qs('#p-secret').value.trim();
+    } else if (t === 'serverchan') {
+      service.sckey = UI.qs('#p-sckey').value.trim();
+      if (!service.sckey) { UI.toast('SCKEY 不能为空', 'warn'); return; }
+    } else if (t === 'qiwei') {
+      service.webhook_url = UI.qs('#p-webhook').value.trim();
+      if (!service.webhook_url) { UI.toast('Webhook URL 不能为空', 'warn'); return; }
+      service.userids = UI.qs('#p-userids').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      service.phoneids = UI.qs('#p-phoneids').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    } else if (t === 'pushplus') {
+      service.token = UI.qs('#p-token').value.trim();
+      if (!service.token) { UI.toast('Token 不能为空', 'warn'); return; }
+      service.topic = UI.qs('#p-topic').value.trim();
+    }
+    const newList = pushServices.concat([service]);
+    const res = await UI.api('PUT', '/api/users/' + encodeURIComponent(USERNAME), { push_services: newList });
+    if (res.ok) { UI.closeModal(); UI.toast('已添加推送服务', 'ok'); loadUser(); }
+  });
+});
+
+document.addEventListener('click', async function (e) {
+  const del = e.target.closest('button[data-push-del]');
+  if (!del) return;
+  const idx = parseInt(del.dataset.pushDel, 10);
+  const newList = pushServices.slice(); newList.splice(idx, 1);
+  const res = await UI.api('PUT', '/api/users/' + encodeURIComponent(USERNAME), { push_services: newList });
+  if (res.ok) { UI.toast('已删除', 'ok'); loadUser(); }
+});
+
+// ==================== 阅读上报 ====================
+function renderChapters() {
+  const tbody = UI.qs('#chapter-tbody');
+  if (!chapters.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="muted">暂无章节</td></tr>';
+    return;
+  }
+  tbody.innerHTML = chapters.map(function (c, i) {
+    return '<tr><td><input type="checkbox" class="chk-chapter" data-idx="' + i + '"></td>' +
+      '<td>' + UI.escapeHtml(c.chapterName || '') + '</td>' +
+      '<td>' + UI.escapeHtml(c.chapterid) + '</td></tr>';
+  }).join('');
+}
+
+UI.qs('#chk-all').addEventListener('change', function () {
+  const checked = UI.qs('#chk-all').checked;
+  UI.qsa('#chapter-tbody .chk-chapter').forEach(function (c) { c.checked = checked; });
+});
+
+UI.qs('#r-search').addEventListener('click', async function () {
+  const keyword = UI.qs('#r-bookid').value.trim();
+  if (!keyword) { UI.toast('请输入书名关键词或书籍ID', 'warn'); return; }
+  const res = await UI.api('POST', '/api/readtime/search_books', { username: USERNAME, keyword: keyword });
+  if (!res.ok) return;
+  const rows = res.data.map(function (b, i) {
+    return '<tr><td><button class="btn sm primary" data-pick="' + UI.escapeHtml(b.BookId) + '">选择</button></td>' +
+      '<td>' + UI.escapeHtml(b.BookName) + '</td><td>' + UI.escapeHtml(b.AuthorName) + '</td>' +
+      '<td>' + UI.escapeHtml(b.BookId) + '</td></tr>';
+  }).join('');
+  UI.openModal('<h3>选择书籍</h3><div class="table-wrap"><table class="data"><thead>' +
+    '<tr><th></th><th>书名</th><th>作者</th><th>书籍ID</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="modal-actions"><button class="btn" id="s-close">关闭</button></div>');
+  UI.qs('#s-close').onclick = UI.closeModal;
+  UI.qsa('button[data-pick]').forEach(function (btn) {
+    btn.onclick = function () { UI.qs('#r-bookid').value = btn.dataset.pick; UI.closeModal(); };
+  });
+});
+
+UI.qs('#r-chapters').addEventListener('click', async function () {
+  const bookid = UI.qs('#r-bookid').value.trim();
+  if (!bookid) { UI.toast('请填写书籍ID', 'warn'); return; }
+  const btn = UI.qs('#r-chapters');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const res = await UI.api('GET', '/api/readtime/chapters?bookid=' + encodeURIComponent(bookid));
+  btn.disabled = false; btn.textContent = '获取章节列表';
+  if (!res.ok) return;
+  chapters = res.data;
+  renderChapters();
+  UI.toast('已获取 ' + chapters.length + ' 个章节', 'ok');
+});
+
+UI.qs('#r-build').addEventListener('click', async function () {
+  const bookid = UI.qs('#r-bookid').value.trim();
+  const ids = UI.qsa('#chapter-tbody .chk-chapter').filter(function (c) { return c.checked; })
+    .map(function (c) { return chapters[parseInt(c.dataset.idx, 10)].chapterid; });
+  if (!ids.length) { UI.toast('请选择章节', 'warn'); return; }
+  const res = await UI.api('POST', '/api/readtime/build', {
+    bookid: bookid, chapter_ids: ids,
+    min_dur: parseInt(UI.qs('#r-min').value, 10) || 5,
+    max_dur: parseInt(UI.qs('#r-max').value, 10) || 10,
+    final_end: UI.qs('#r-end').value.trim(),
+  });
+  if (!res.ok) return;
+  records = records.concat(res.data);
+  renderRecords();
+  UI.toast(res.message, 'ok');
+});
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+function renderRecords() {
+  const tbody = UI.qs('#record-tbody');
+  if (!records.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">暂无记录</td></tr>';
+    UI.qs('#r-total').textContent = '';
+    return;
+  }
+  tbody.innerHTML = records.map(function (r) {
+    return '<tr><td>' + UI.escapeHtml(r.bookid) + '</td><td>' + UI.escapeHtml(r.chapterid) + '</td>' +
+      '<td>' + (r.read_ms / 60000).toFixed(2) + '</td>' +
+      '<td>' + fmtTime(r.start_ts) + '</td><td>' + fmtTime(r.end_ts) + '</td></tr>';
+  }).join('');
+  const total = records.reduce(function (s, r) { return s + r.read_ms; }, 0) / 60000;
+  UI.qs('#r-total').textContent = '共 ' + records.length + ' 条 / ' + total.toFixed(2) + ' 分钟';
+}
+
+UI.qs('#r-clear').addEventListener('click', function () { records = []; renderRecords(); });
+
+UI.qs('#r-submit').addEventListener('click', async function () {
+  if (!records.length) { UI.toast('列表为空，请先添加记录', 'warn'); return; }
+  const btn = UI.qs('#r-submit');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 上报中';
+  const res = await UI.api('POST', '/api/readtime/report', { username: USERNAME, records: records });
+  btn.disabled = false; btn.textContent = '确认上报';
+  if (res.ok) { UI.toast(res.message, 'ok'); records = []; renderRecords(); }
+  else { UI.toast(res.message, 'err'); }
+});
+
+// ==================== 初始化 ====================
+async function loadMeta() {
+  const res = await UI.api('GET', '/api/meta', undefined, { silent: true });
+  if (res.ok) {
+    META.task_names = res.data.task_names || [];
+    META.push_service_types = res.data.push_service_types || [];
+  }
+}
+
+(async function init() {
+  await loadMeta();
+  await loadDeviceOptions();
+  await loadUser();
+  renderRecords();
+})();
+</script>
+{% endblock %}
