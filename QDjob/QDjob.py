@@ -3,21 +3,32 @@ import os
 import json
 import requests
 import time
-import random
+import random, string
 import re
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Callable
-from enctrypt_qidian import getQDSign, getSDKSign, getborgus, getuserid_from_QDInfo, getQDInfo_byQDInfo, getibex_byibex
+from enctrypt_qidian import getQDSign, getSDKSign, getborgus, getuserid_from_QDInfo, getQDInfo_byQDInfo, getibex_byibex, getsignature
 from push import *
 from logger import LoggerManager
 from logger import DEFAULT_LOG_RETENTION
 
-__version__ = 'v1.3.6'
+__version__ = 'v1.4.1'
 
 # 配置常量
 CONFIG_FILE = 'config.json'
 COOKIES_DIR = 'cookies'
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Linux; Android 13; PDEM10 Build/TP1A.220905.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/109.0.5414.86 MQQBrowser/6.2 TBS/047601 Mobile Safari/537.36 QDJSSDK/1.0  QDNightStyle_1  QDReaderAndroid/7.9.384/1466/1000032/OPPO/QDShowNativeLoading"
+DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS = 20  # cookies 自动刷新间隔（天），默认20天
 logger = LoggerManager().setup_basic_logger()
+
+SDK_VERSION_TABLE = {
+    "1656": "401",
+    "1676": "401",
+    "1686": "401",
+    "1696": "401",
+    "1706": "401",
+    "1716": "401",
+}
 
 class QidianError(Exception):
     """自定义异常类"""
@@ -27,12 +38,15 @@ class QidianError(Exception):
 
 class UserConfig:
     """用户配置"""
-    def __init__(self, username: str, cookies: Dict[str, str], 
+    def __init__(self, username: str, cookies: Dict[str, str], cookies_file: str,
                  tasks: Dict[str, bool], user_agent: str, ibex: str,
                  push_services: List[PushService], readtime_task_config: Dict[str, Any], tokenid: Optional[str] = None, 
-                 usertype: Optional[str] = None):
+                 usertype: Optional[str] = None,
+                 cookies_refresh_interval_days: int = DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS,
+                 last_cookies_refresh_time: Optional[str] = None):
         self.username = username
         self.cookies = cookies
+        self.cookies_file = cookies_file
         self.tasks = tasks
         self.user_agent = user_agent
         self.ibex = ibex
@@ -40,6 +54,8 @@ class UserConfig:
         self.readtime_task_config = readtime_task_config
         self.tokenid = tokenid
         self.usertype = usertype
+        self.cookies_refresh_interval_days = cookies_refresh_interval_days
+        self.last_cookies_refresh_time = last_cookies_refresh_time
 
 class ConfigManager:
     """配置管理类"""
@@ -116,6 +132,7 @@ class ConfigManager:
             user = UserConfig(
                 username=user_data['username'],
                 cookies=cookies,
+                cookies_file=cookies_path,
                 tasks=user_data.get('tasks', {}),
                 user_agent=user_agent,
                 ibex=ibex,
@@ -123,6 +140,8 @@ class ConfigManager:
                 readtime_task_config=readtime_task_config,
                 tokenid=user_data.get('tokenid'),
                 usertype=user_data.get('usertype'),
+                cookies_refresh_interval_days=user_data.get('cookies_refresh_interval_days', DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS),
+                last_cookies_refresh_time=user_data.get('last_cookies_refresh_time') or None,
             )
             users.append(user)
             
@@ -137,6 +156,52 @@ class ConfigManager:
             logger.debug(f"保存cookies成功: {cookies_path}")
         except Exception as e:
             logger.error(f"保存cookies失败: {e}")
+
+    def update_last_refresh_time(self, username: str, refresh_time: Optional[str] = None) -> bool:
+        """记录用户上次刷新cookies的时间点并回写config.json
+
+        :param username: 用户名
+        :param refresh_time: 指定时间字符串(格式:%Y-%m-%d %H:%M:%S)，为空则取当前本地时间
+        :return: 是否记录成功
+        """
+        if not refresh_time:
+            refresh_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+        # 以磁盘上的配置为准，避免内存与磁盘不一致造成覆盖
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception as e:
+            logger.error(f"读取配置文件失败，无法记录cookies刷新时间: {e}")
+            return False
+
+        updated = False
+        for user_data in config.get('users', []):
+            if user_data.get('username') == username:
+                user_data['last_cookies_refresh_time'] = refresh_time
+                updated = True
+                break
+
+        if not updated:
+            logger.warning(f"未在配置文件中找到用户[{username}]，无法记录cookies刷新时间")
+            return False
+
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"写入配置文件失败，无法记录cookies刷新时间: {e}")
+            return False
+
+        # 同步内存中的配置与用户对象
+        self.config = config
+        for user in self.users:
+            if user.username == username:
+                user.last_cookies_refresh_time = refresh_time
+                break
+
+        logger.info(f"用户[{username}]cookies刷新时间已记录: {refresh_time}")
+        return True
 
     def _validate_config(self):
         """全局配置校验"""
@@ -207,10 +272,29 @@ class ConfigManager:
             if not isinstance(user_data['tokenid'], str):
                 logger.error(f"用户[{user_data.get('username', '未知')}] 字段[tokenid] 必须为字符串类型")
                 return False
-        if 'usertype' not in user_data:
+        if 'usertype' in user_data:
             if not isinstance(user_data['usertype'], str):
                 logger.error(f"用户[{user_data.get('username', '未知')}] 字段[usertype] 必须为字符串类型")
                 return False
+
+        # 校验cookies自动刷新间隔（天），默认20天
+        if 'cookies_refresh_interval_days' in user_data:
+            try:
+                interval_days = int(user_data['cookies_refresh_interval_days'])
+                if interval_days <= 0:
+                    raise ValueError("cookies自动刷新间隔必须为正整数")
+                user_data['cookies_refresh_interval_days'] = interval_days
+            except (ValueError, TypeError):
+                logger.warning(f"用户[{user_data.get('username', '未知')}] cookies自动刷新间隔配置错误，使用默认值 {DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS} 天")
+                user_data['cookies_refresh_interval_days'] = DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS
+        else:
+            user_data['cookies_refresh_interval_days'] = DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS
+
+        # 校验上次刷新cookies时间点（由程序记录，允许为空）
+        if 'last_cookies_refresh_time' in user_data and user_data['last_cookies_refresh_time'] is not None:
+            if not isinstance(user_data['last_cookies_refresh_time'], str):
+                logger.warning(f"用户[{user_data.get('username', '未知')}] last_cookies_refresh_time 必须为字符串类型，已重置为空")
+                user_data['last_cookies_refresh_time'] = ''
 
         tasks = user_data.get('tasks', {})
         if not isinstance(tasks, dict):
@@ -280,6 +364,7 @@ class QidianClient:
     """起点客户端"""
     def __init__(self, config: UserConfig):
         self.config = config
+        self.username = config.username
         self.tokenid = config.tokenid
         self.session = requests.Session()
         self._init_headers()
@@ -337,6 +422,19 @@ class QidianClient:
             logger.error('无法匹配User-Agent格式，请检查UA内容')
             return False
         
+        match_2 = re.search(r'Android\s+([\d.]+)', self.config.user_agent, re.IGNORECASE)
+        if match_2:
+            self.android_version = match_2.group(1)
+            logger.debug(f'当前Android版本：{self.android_version}')
+        else:
+            logger.error('无法匹配Android版本号，请检查UA内容')
+            return False
+
+        if self.versioncode in SDK_VERSION_TABLE:
+            self.sdkversion = SDK_VERSION_TABLE[self.versioncode]
+        else:
+            self.sdkversion = '401'  # 默认值
+
         self.ibex = self.config.ibex
         logger.debug(f'ibex：{self.ibex}')
         if not self.ibex:
@@ -627,6 +725,190 @@ class QidianClient:
             'captcha_data': locals().get('captcha_data', {})
         }
 
+    def ptlogin_checkstatus(self):
+        '''检查登录状态, 获取cookies有效期'''
+        url = 'https://ptlogin.yuewen.com/sdk/checkstatus'
+        ts = str(int(time.time() * 1000))
+        
+        headers = {
+            'Cookie': f'ywguid={self.config.cookies.get("ywguid","")};ywkey={self.config.cookies.get("ywkey","")};',
+            'referer': 'http://android.qidian.com',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Host': 'ptlogin.yuewen.com',
+            'Connection': 'Keep-Alive',
+            'User-Agent': 'okhttp/3.12.6',
+        }
+        data = {
+            'areaid': '30',
+            'format': 'json',
+            'returnurl': 'http://www.qidian.com',
+            'source': '1000009',
+            'ticket': '0',
+            'alk': ''.join(random.choices(string.ascii_letters + string.digits, k=12)),
+            'auto': '1',
+            'ibex': getibex_byibex(ts, self.ibex),
+            'appid': '12',
+            'osversion': f'Android{self.android_version}_{self.version}_{self.versioncode}',
+            'version': self.versioncode,
+            'sdkversion': self.sdkversion,
+            'signature': getsignature(ts, self.qid),
+            'referer': 'http://android.qidian.com',
+            'autotime': '30',
+        }
+        try:
+            response = self.session.post(url=url, headers=headers, data=data, timeout=60)  # 添加超时设置
+        except requests.exceptions.Timeout:
+            logger.error("请求超时，请检查网络连接")
+            return {"NeedRefresh": False, "status": "timeout", "expired_time": ""}
+        logger.debug(f"[ptlogin_checkstatus]: {response.text}")
+        res = response.json()
+        if not res:
+            logger.error("[ptlogin_checkstatus] 获取登录状态失败")
+            return {"NeedRefresh": False, "status": "failed", "expired_time": ""}
+        if res.get('code') != 0:
+            # if res.get('code') == -31001:
+            #     logger.error("[ptlogin_checkstatus] 当前登录状态已失效且无法自动更新cookies，请重新手动登录")
+            #     return {"NeedRefresh": False, "status": "Manual", "expired_time": ""}
+            logger.warning(f"[ptlogin_checkstatus] 当前登录状态已失效 code: {res.get('code')}")
+            if res.get('data'):
+                if res["data"].get("autoLoginExpiredTime"):
+                    expired_time = res["data"]["autoLoginExpiredTime"]
+                    expired_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expired_time))
+                    logger.info(f"[ptlogin_checkstatus] 登录有效期: {expired_time_str}")
+                    return {"NeedRefresh": True, "status": "expired", "expired_time": expired_time}
+                return {"NeedRefresh": True, "status": "error [autoLoginExpiredTime]", "expired_time": ""}
+            return {"NeedRefresh": True, "status": "error [code]", "expired_time": ""}
+        if res.get('data'):
+            if res["data"].get("autoLoginExpiredTime"):
+                expired_time = res["data"]["autoLoginExpiredTime"]
+                expired_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expired_time))
+                logger.info(f"[ptlogin_checkstatus] 登录有效期: {expired_time_str}")
+                return {"NeedRefresh": False, "status": "active", "expired_time": expired_time_str}
+            return {"NeedRefresh": False, "status": "active error [autoLoginExpiredTime]", "expired_time": ""}
+        return {"NeedRefresh": False, "status": "active error [data]", "expired_time": ""}
+
+    def login_druidv6(self):
+        url = "https://druidv6.if.qidian.com/argus/api/v2/user/login"
+
+        headers = {
+            'User-Agent': self.config.user_agent,
+            'Connection': "Keep-Alive",
+            'Accept-Encoding': "gzip",
+            'Host': 'druidv6.if.qidian.com',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'tstamp': "",
+            'QDInfo': "",
+            'borgus': "",
+            'ibex': "",
+            'QDSign': "",
+        }
+
+        data = {
+            'fromSource': "1000009",
+            'loginfrom': "0",
+            'areaId': self.config.cookies.get('areaId'),
+            'isFirstRegister': "false",
+            'ywguid': self.config.cookies.get('ywguid'),
+            'appId': self.config.cookies.get('appId'),
+            'ywkey': self.config.cookies.get('ywkey'),
+        }
+
+        cookies = {
+            'appId': self.config.cookies.get('appId'),
+            'areaId': self.config.cookies.get('areaId'),
+            'lang': "cn",
+            'mode': "normal",
+            'bar': "44",
+            'qid': self.config.cookies.get('qid'),
+            'qidth': self.config.cookies.get('qidth'),
+            'ywguid': self.config.cookies.get('ywguid'),
+            'ywkey': self.config.cookies.get('ywkey'),
+            'QDInfo': self.config.cookies.get('QDInfo'),
+        }
+
+        data_encrypt = data.copy()
+        ts = str(int(time.time() * 1000))
+        QDSign = getQDSign(ts, data_encrypt, self.version, self.qid, self.userid)
+        QDInfo = getQDInfo_byQDInfo(ts, self.QDInfo)
+        borgus = getborgus(ts, data_encrypt, self.versioncode, self.qid)
+
+        ibex = getibex_byibex(ts, self.ibex)
+
+        headers.update({
+            'tstamp': ts,
+            'QDInfo': QDInfo,
+            'borgus': borgus,
+            'QDSign': QDSign,
+            'ibex': ibex,
+        })
+        cookies.update({
+            'QDInfo': QDInfo,
+        })
+
+        try:
+            response = self.session.post(
+                url, 
+                data=data, 
+                headers=headers, 
+                cookies=cookies, 
+                timeout=60  # 添加超时设置
+            )
+        except requests.exceptions.Timeout:
+            logger.error("登录druidv6.if.qidian.com超时，超过60秒")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"登录druidv6.if.qidian.com请求异常: {e}")
+            return False
+        logger.info(f"[login_druidv6] 原始响应: {response.text}")
+    
+        res = response.json()
+
+        if res.get('Result') != 0 and res.get('Result') != "0":
+            logger.error("登录druidv6.if.qidian.com失败")
+            return False
+        if not res.get("Data") or not res.get("Data").get("LoginResult"):
+            logger.error("登录druidv6.if.qidian.com失败，返回data为空")
+            return False
+        cmfuToken = str(res['Data']['LoginResult'].get('CmfuToken'))
+        cookies_new = self.config.cookies.copy()
+        cookies_new.update({
+            'cmfuToken': cmfuToken,
+        })
+        return cookies_new
+    
+    def update_cookies(self):
+        '''更新cookies函数'''
+        cookies_old = self.config.cookies.copy()
+        logger.debug(f"[update_cookies] cookies_old: {cookies_old}")
+        cookies_new = self.login_druidv6()
+        logger.debug(f"[update_cookies] cookies_new: {cookies_new}")
+        if not cookies_new:
+            return False, "更新cookies失败"
+        if cookies_new == cookies_old:
+            logger.info("[update_cookies] 服务端返回的cookies与本地一致（cmfuToken未变化），无需更新")
+            return True, "cookies未更新（cmfuToken未变化）"
+        logger.info(f"保留旧cookies到[{COOKIES_DIR}/{self.username}_old.json] 中")
+        try:
+            # 保留旧cookies到f"{COOKIE_DIR}/{self.username}_old.json"
+            with open(f"{COOKIES_DIR}/{self.username}_old.json", 'w', encoding='utf-8') as f:
+                json.dump(cookies_old, f, ensure_ascii=False, indent=4)
+                logger.info(f"保留旧cookies成功：{f.name}")
+        except Exception as e:
+            logger.error(f"保存旧cookies失败：{e}")
+            return False, "保留旧cookies失败"
+        logger.info("开始写入更新后的cookies文件")
+        try:
+            with open(self.config.cookies_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies_new, f, ensure_ascii=False, indent=4)
+                logger.info("更新成功")
+        except Exception as e:
+            logger.error(f"写入更新后的cookies文件失败：{e}")
+            return False, "写入新cookies失败"
+        
+        # 更新cookies
+        self.config.cookies = cookies_new
+        return True, "更新cookies成功"
+
     def check_login(self) -> Optional[str]:
         """检查登录状态"""
         ts = str(int(time.time() * 1000))
@@ -661,6 +943,28 @@ class QidianClient:
         except Exception as e:
             logger.error(f"登录检测异常: {e}")
             return None
+
+    def check_riskstatus(self) -> Optional[str]:
+        """检查福利中心风险状态"""
+        url = 'https://h5.if.qidian.com/argus/api/v1/common/risk/check'
+        params = {
+            'appId': '1999'
+        }
+        result = self._make_sdk_request(url, params=params, method='GET')
+
+        # 检测登录状态
+        login_status = True
+        if result.get("status", 200)==401 and result.get("error", "") == "Unauthorized":
+            login_status = False
+
+        # 检测风险状态
+        risk_status = False
+        if result.get('Result') == 0 or result.get('Result') == "0":
+            if result.get('Data', {}).get('RiskConf'):
+                risk_status = True
+
+        return {'login_status': login_status, 'risk_status': risk_status}
+        
 
     def qdsign(self) -> dict:
         """执行签到任务"""
@@ -1683,7 +1987,100 @@ class MainApp:
                     logger.warning(f"用户[{user.username}]未登录")
                     continue
                 
-                logger.info(f"用户[{nickname}]登录成功")
+                logger.info(f"用户主页[{nickname}]登录成功")
+
+                # 根据配置的刷新间隔自动刷新cookies（替代已废弃的ptlogin有效期检测）
+                if self._need_refresh_cookies(user):
+                    logger.info(f"用户[{user.username}]开始自动刷新cookies")
+                    is_success, refresh_msg = client.update_cookies()
+                    if is_success:
+                        logger.info(f"用户[{user.username}]cookies自动刷新成功: {refresh_msg}")
+                        self.config_manager.update_last_refresh_time(user.username)
+                    else:
+                        logger.warning(f"用户[{user.username}]cookies自动刷新失败: {refresh_msg}，继续后续流程")
+                    # 单独推送一次cookies刷新结果
+                    self._send_cookies_refresh_notification(user, is_success, refresh_msg, trigger="按间隔自动刷新")
+
+                # 检测福利中心状态 有ptlogin，这个可以取消
+                WelfareStatus = client.check_riskstatus()
+                login_status = WelfareStatus.get('login_status', True)
+                risk_status = WelfareStatus.get('risk_status', False)
+                if not login_status:
+                    logger.warning(f"用户[{user.username}]福利中心登录失效，尝试刷新cookies")
+                    is_success, refresh_msg = client.update_cookies()
+                    # 单独推送一次cookies刷新结果
+                    self._send_cookies_refresh_notification(user, is_success, refresh_msg, trigger="福利中心登录失效")
+                    if not is_success:
+                        logger.error(f"用户[{user.username}]刷新cookies失败: {refresh_msg}，跳过该用户执行下一个用户")
+                        continue
+                    self.config_manager.update_last_refresh_time(user.username)
+                    logger.info(f"用户[{user.username}]刷新cookies成功: {refresh_msg}，重新检测福利中心登录状态")
+
+                    # 刷新成功后重新检测福利中心登录状态
+                    WelfareStatus = client.check_riskstatus()
+                    login_status = WelfareStatus.get('login_status', True)
+                    risk_status = WelfareStatus.get('risk_status', False)
+                    if not login_status:
+                        logger.warning(f"用户[{user.username}]刷新cookies后福利中心仍登录失效，跳过该用户执行下一个用户")
+                        continue
+                    logger.info(f"用户[{user.username}]刷新cookies后福利中心登录状态恢复正常")
+
+                if risk_status:
+                    logger.warning(f"用户[{user.username}]福利中心触发风控，后续任务执行可能会出现问题")
+
+
+                # # 检查账号ptlogin登录状态，这个更彻底
+                # ptlogin_result = client.ptlogin_checkstatus()
+                # ptlogin_status = ptlogin_result["status"]
+                # ptlogin_expired_time = ptlogin_result["expired_time"]
+                # topush = False
+
+                # if ptlogin_result["NeedRefresh"] == True:
+                #     if ptlogin_status == "expired":
+                #         logger.warning(f"用户[{user.username}]ptlogin登录已过期，过期时间: {ptlogin_expired_time}，尝试自动更新cookies")
+                #     else:
+                #         logger.warning(f"用户[{user.username}]ptlogin登录状态异常，错误信息：{ptlogin_status}，尝试自动更新cookies")
+                #     # 刷新cookies
+                #     is_success, refresh_msg = client.update_cookies()
+                #     if is_success:
+                #         logger.info(f"用户[{user.username}]cookies更新成功")
+                #         # 简单推送提示
+                #         topush = True
+                #         title_simple = f"QDjob 用户[{user.username}] cookies更新成功"
+                #         msg_text_simple = f"用户[{user.username}]cookies更新成功，更新时间: {ptlogin_expired_time}"
+                        
+                #     else:
+                #         logger.error(f"用户[{user.username}]cookies更新失败: {refresh_msg}，后续任务可能执行失败")
+                #         # 简单推送提示
+                #         topush = True
+                #         title_simple = f"QDjob 用户[{user.username}] cookies更新失败"
+                #         msg_text_simple = f"用户[{user.username}]cookies更新失败，错误信息：{refresh_msg}\n更新时间: {ptlogin_expired_time}"
+                # else:
+                #     if ptlogin_status == "failed":
+                #         logger.warning(f"用户[{user.username}]获取ptlogin登录状态异常，错误信息：{ptlogin_status}")
+                #     elif ptlogin_status == "Manual":
+                #         logger.error(f"用户[{user.username}]ptlogin已过期太久，需要手动登录，更新时间：{ptlogin_expired_time}")
+                #         topush = True
+                #         title_simple = f"QDjob 用户[{user.username}] ptlogin已过期太久，需要手动登录"
+                #         msg_text_simple = f"用户[{user.username}]ptlogin已过期太久，需要手动登录，更新时间：{ptlogin_expired_time}"
+                #     elif ptlogin_status == "active":
+                #         logger.info(f"用户[{user.username}]ptlogin登录状态正常，cookies自动更新时间：{ptlogin_expired_time}")
+                #     else:
+                #         logger.warning(f"用户[{user.username}]ptlogin登录状态未知，错误信息：{ptlogin_status}")
+
+                # # 单独推送cookies更新消息
+                # if topush == True:
+                #     for push_service in user.push_services:
+                #         service_name = push_service.__class__.__name__
+                #         try:
+                #             push_result = push_service.send(title_simple, msg_text_simple)
+                #             if push_result.get('success'):
+                #                 logger.info(f"[{service_name}] 推送成功")
+                #             else:
+                #                 logger.info(f"[{service_name}] 推送失败: {push_result.get('raw')}")
+                #         except Exception as e:
+                #             logger.error(f"[{service_name}] 推送异常: {str(e)}")
+
 
                 retry_attempts = self.config_manager.config.get('retry_attempts', 3)
                 
@@ -1700,6 +2097,78 @@ class MainApp:
             except Exception as e:
                 logger.error(f"处理用户[{user.username}]时发生错误: {e}")
     
+    def _need_refresh_cookies(self, user: UserConfig) -> bool:
+        """根据配置的刷新间隔判断是否需要自动刷新cookies
+
+        规则：
+        - 刷新时间记录缺失或非法（为空/非时间字符串）：仅将其纠正为当前时间，本次不刷新（返回 False）
+        - 距上次刷新未超过间隔：返回 False
+        - 距上次刷新已超过间隔：返回 True
+
+        :param user: 用户配置对象
+        :return: True 表示需要刷新
+        """
+        interval_days = getattr(user, 'cookies_refresh_interval_days', DEFAULT_COOKIES_REFRESH_INTERVAL_DAYS)
+        last_time = getattr(user, 'last_cookies_refresh_time', None)
+
+        last_dt = None
+        if last_time:
+            try:
+                last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                last_dt = None
+
+        if last_dt is None:
+            logger.info(f"用户[{user.username}]无有效的cookies刷新时间记录[{last_time}]，已将其纠正为当前时间，本次不自动刷新cookies")
+            self.config_manager.update_last_refresh_time(user.username)
+            return False
+
+        elapsed = datetime.now() - last_dt
+        if elapsed >= timedelta(days=interval_days):
+            logger.info(f"用户[{user.username}]距上次刷新cookies已{elapsed.days}天，超过间隔{interval_days}天，需要自动刷新")
+            return True
+
+        logger.info(f"用户[{user.username}]距上次刷新cookies仅{elapsed.days}天（间隔{interval_days}天），暂不自动刷新")
+        return False
+    
+    def _send_cookies_refresh_notification(self, user: UserConfig, success: bool, message: str, trigger: str = "") -> None:
+        """cookies刷新后单独推送一次结果
+
+        :param user: 用户配置对象
+        :param success: 刷新是否成功
+        :param message: 刷新结果描述
+        :param trigger: 触发刷新的原因
+        """
+        if not user.push_services:
+            logger.debug(f"用户[{user.username}]未配置推送服务，跳过cookies刷新推送")
+            return
+
+        result_text = "成功" if success else "失败"
+        emoji = "✅" if success else "❌"
+        refresh_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+        title = f"QDJob 用户[{user.username}] cookies刷新{result_text}"
+        msg_text = (
+            f"👤 用户[{user.username}] cookies刷新{result_text}\n"
+            + "-" * 20 + "\n"
+            f"{emoji} 刷新结果: {result_text}\n"
+            f"📝 详情: {message}\n"
+            f"🕒 刷新时间: {refresh_time}\n"
+        )
+        if trigger:
+            msg_text += f"🔧 触发方式: {trigger}\n"
+
+        for push_service in user.push_services:
+            service_name = push_service.__class__.__name__
+            try:
+                push_result = push_service.send(title, msg_text)
+                if push_result.get('success'):
+                    logger.info(f"[{service_name}] cookies刷新推送成功")
+                else:
+                    logger.info(f"[{service_name}] cookies刷新推送失败: {push_result.get('raw')}")
+            except Exception as e:
+                logger.error(f"[{service_name}] cookies刷新推送异常: {str(e)}")
+
     def _send_notification(self, user: UserConfig, results: Dict[str, Any]) -> None:
         """发送通知"""
         if not user.push_services:
