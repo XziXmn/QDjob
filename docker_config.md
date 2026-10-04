@@ -6,12 +6,12 @@
 
 在开始部署前，请注意以下关键点：
 
-1. **配置生成原理**：QDjob 容器需要`config.json`和`cookies`文件夹才能正常运行
-2. **配置工具**：必须使用 `QDjob_editor`生成有效配置
-   - **注意：docker部署不支持使用中文用户名**
-   - 容器启动时会自动在映射目录创建空的`config.json`和`cookies`文件夹
-   - 但这些空文件无法直接使用，需要通过 `QDjob_editor` 进行配置用户
-3. **目录映射**：Docker 容器将 `/app` 目录映射到宿主机目录，所有配置文件都存储在此
+1. **镜像已内置网页版配置界面（WebUI）**：容器启动后，浏览器访问 `http://<主机IP>:33989` 即可完成全部配置，**无需**事先在本地用 `QDjob_editor` 生成配置文件
+2. **访问口令**：建议通过环境变量 `QDJOB_WEBUI_PASSWORD` 设置访问口令；未设置时，任何能访问该端口的人都可以修改配置
+   - **注意：建议避免使用中文用户名**（容器语言环境可能导致异常）
+   - 容器启动时会自动在映射目录创建空的 `config.json` 和 `cookies` 文件夹
+3. **目录映射**：Docker 容器将 `/app` 目录映射到宿主机目录，`config.json`、`cookies`、`logs`、`crontab.txt`、`devices.json`、`versions.json` 都存储在此
+4. **定时方式**：默认由程序自身在运行期间按计划执行（进程内调度），因此**请让容器保持运行**；如需无 WebUI 的纯系统 cron 模式，可设置 `QDJOB_MODE=cron`
 
 ## 🐳 Docker 原生命令部署
 
@@ -28,11 +28,10 @@ docker info
 mkdir -p /your/data/path/QDjob
 ```
 
-### 3. 生成配置文件
+### 3. 配置用户（二选一）
 
-1. 在[release](https://github.com/JaniQuiz/QDjob/releases)中下载并运行对应架构的`QDjob_editor`
-2. 在编辑器中配置用户
-3. 将生成的`config.json`和`cookies`文件夹复制到 `/your/data/path/QDjob`
+- **方式一（推荐）**：跳过本步骤，直接按第 4 步启动容器，然后浏览器访问 `http://<主机IP>:33989` 在网页中配置
+- **方式二**：事先使用 `QDjob_editor` / `QDjob_editor_web` 在本地配置好后，将 `config.json` 和 `cookies` 文件夹复制到 `/your/data/path/QDjob`
 
 ### 4. 启动容器
 
@@ -40,12 +39,16 @@ mkdir -p /your/data/path/QDjob
 docker run -d \
   --name qdjob \
   --restart unless-stopped \
+  -p 33989:33989 \
   -v /your/data/path/QDjob:/app \
   -e TZ=Asia/Shanghai \
+  -e QDJOB_WEBUI_PASSWORD=你的访问口令 \
   janiquiz/qdjob:latest
 ```
 
-> **注意**：`/your/data/path/QDjob` 需替换为您实际创建的目录路径
+> **注意**：`/your/data/path/QDjob` 需替换为您实际创建的目录路径；`-p 33989:33989` 用于将容器内的 WebUI 映射出来
+
+启动后浏览器访问 `http://<主机IP>:33989`，输入访问口令即可开始配置。
 
 ### 5. 后续Docker镜像的更新和容器更新
 1. 拉取更新后的 Docker 镜像：
@@ -62,8 +65,10 @@ docker stop qdjob && docker rm qdjob
 docker run -d \
   --name qdjob \
   --restart unless-stopped \
+  -p 33989:33989 \
   -v /your/data/path/QDjob:/app \
   -e TZ=Asia/Shanghai \
+  -e QDJOB_WEBUI_PASSWORD=你的访问口令 \
   janiquiz/qdjob:latest
 ```
 
@@ -78,23 +83,28 @@ cd ~/QDjob
 
 ### 2. 创建 `docker-compose.yml` 文件
 
+> 仓库根目录已提供可直接使用的 `docker-compose.yml`，也可按下方内容自行创建。
+
 ```yaml
-version: '3'
 services:
   qdjob:
     image: janiquiz/qdjob:latest
     container_name: qdjob
     restart: unless-stopped
+    ports:
+      - "33989:33989"          # 宿主机端口:容器WebUI端口
     volumes:
-      - ./data:/app  # 宿主机目录映射到容器/app
+      - ./data:/app            # 宿主机目录映射到容器/app
     environment:
       - TZ=Asia/Shanghai
+      - QDJOB_WEBUI_PASSWORD=你的访问口令
 ```
 
-### 3. 生成配置文件
+### 3. 配置用户（二选一）
 
-1. 与上面类似，先使用 `QDjob_editor.exe` 生成有效配置
-2. 将`config.json`和`cookies`文件夹复制到 `~/QDjob/data` 目录
+- **方式一（推荐）**：直接启动服务后，浏览器访问 `http://<主机IP>:33989` 在网页中配置
+- **方式二**：事先使用编辑器配置好后，将 `config.json` 和 `cookies` 文件夹复制到 `~/QDjob/data` 目录
+  - 与上面类似，先使用 `QDjob_editor.exe` 生成有效配置
 
 ### 4. 启动服务
 
@@ -139,15 +149,18 @@ if [ -f /usr/bin/curl ];then curl -sSO https://download.bt.cn/install/install_pa
 
 ```bash
 mkdir -p /www/wwwroot/QDjob/data
-# 使用 QDjob_editor 生成配置后，将文件上传至 /www/wwwroot/QDjob/data
 
 docker run -d \
   --name qdjob \
   --restart unless-stopped \
+  -p 33989:33989 \
   -v /www/wwwroot/QDjob/data:/app \
   -e TZ=Asia/Shanghai \
+  -e QDJOB_WEBUI_PASSWORD=你的访问口令 \
   janiquiz/qdjob:latest
 ```
+
+> 启动后，浏览器访问 `http://<面板服务器IP>:33989` 进行配置（注意在宝塔「安全」中放行该端口）
 
 #### 方式二：Docker Compose 部署
 
@@ -156,22 +169,26 @@ docker run -d \
 2. 填写模板名称（如QDjob），内容如下：
 
 ```yaml
-version: '3'
 services:
   qdjob:
     image: janiquiz/qdjob:latest
     container_name: qdjob
     restart: unless-stopped
+    ports:
+      - "33989:33989"
     volumes:
       - /www/wwwroot/QDjob/data:/app
     environment:
       - TZ=Asia/Shanghai
+      - QDJOB_WEBUI_PASSWORD=你的访问口令
 ```
 
 3. 保存后，点击"使用模板" → 创建容器
-4. **关键步骤**：使用 `QDjob_editor` 生成配置后，通过宝塔文件管理上传至 `/www/wwwroot/QDjob/data`
+4. **配置用户（二选一）**：
+   - **方式一（推荐）**：浏览器访问 `http://<面板服务器IP>:33989`（先在宝塔「安全」放行该端口）在网页中配置
+   - **方式二**：使用 `QDjob_editor` 生成配置后，通过宝塔文件管理上传至 `/www/wwwroot/QDjob/data`
 
-### 4. 配置文件上传指南
+### 4. 配置文件上传说明（方式二）
 
 1. 在宝塔面板中，进入 **文件** → 找到 `/www/wwwroot/QDjob/data`
 2. 将本地通过 `QDjob_editor` 生成的以下文件上传：
@@ -187,16 +204,17 @@ services:
 
 1. **容器启动时**：
    - 检查映射的 `/app` 目录
-   - 如不存在`config.json`和`cookies`，则创建空文件/文件夹
+   - 如不存在 `config.json` 和 `cookies`，则创建空文件/文件夹
 
-2. **但空配置无法使用**：
-   - 容器需要有效的账号配置才能执行任务
-   - 这就是为什么必须使用 `QDjob_editor` 生成配置
+2. **推荐配置方式**：
+   - 容器内置网页版（WebUI），浏览器访问 `http://<主机IP>:33989` 即可完成用户、真实设备、定时方案等全部配置
 
+3. **也可以离线配置**：
+   - 使用 `QDjob_editor` / `QDjob_editor_web` 在本地生成配置后，复制到映射目录
 
 ### 定时任务配置
 
-默认任务执行时间为每天中午 12:00，如需修改，请参照下方Cron表达式说明自行修改`crobtab.txt`文件
+默认任务执行时间为每天中午 12:00，**推荐在网页版「任务执行」页设置**（支持图形化与自定义 cron 表达式），保存后写入 `crontab.txt`；也可按下方说明手工修改该文件。
 
 **Cron 表达式结构**：
 
@@ -207,20 +225,31 @@ services:
 
 > 示例：`0 8 * * *` 表示每天早上 8:00 执行任务
 
+**执行方式说明**：
+
+- 默认由程序自身在运行期间按计划执行（**进程内调度**），因此**容器需要保持运行**（建议使用 `--restart unless-stopped`）
+- 若设置环境变量 `QDJOB_MODE=cron`，则由容器内的系统 cron 执行（无 WebUI），此时同样读取 `crontab.txt`
+
 ## 📎 附录
 
 ### 常见问题
 
 1. **Q：容器启动后任务不执行？**
-  - A：请确认已通过 `QDjob_editor` 生成有效配置，并上传至正确目录
+  - A：请确认已配置有效用户（推荐直接在容器内置的网页版中配置），并让容器保持运行（进程内定时需要程序在运行）
 
-2. **Q：如何查看容器日志？**
-  - A：查看logs目录下的日志文件或者使用docker命令查看
+2. **Q：网页版（WebUI）打不开 / 无法访问？**
+  - A：请确认启动命令包含 `-p 33989:33989`；若在云服务器或宝塔面板上，还需在安全组/防火墙放行该端口；浏览器访问 `http://<主机IP>:33989`
+
+3. **Q：忘记访问口令了？**
+  - A：删除映射目录下的 `.webui_auth.json` 后重启容器即可清除口令；也可在启动时用 `-e QDJOB_WEBUI_PASSWORD=新口令` 覆盖
+
+4. **Q：如何查看容器日志？**
+  - A：在网页版「日志」页查看，或查看logs目录下的日志文件，也可使用docker命令查看
       ```bash
       docker logs qdjob(容器名称)
       ```
 
-3. **Q：如何重启服务？**
+5. **Q：如何重启服务？**
   - A：使用docker命令重启
       ```bash
       docker restart qdjob(容器名称)
@@ -231,12 +260,15 @@ services:
 ```bash
 /your/data/path/QDjob (宿主机目录)
 ├── config.json         # 主配置文件
-├── crontab.txt         # 定时任务配置
-└── cookies/            # 存放所有账号的cookie
-    ├── account1.json
-    ├── account2.json
-    └── ...
+├── cookies/            # 存放所有账号的cookie
+│   ├── account1.json
+│   ├── account2.json
+│   └── ...
+├── devices.json        # 真实设备档案（网页版添加后生成）
+├── versions.json       # 软件版本表（网页版添加版本后生成）
+├── crontab.txt         # 定时表达式（网页版设置定时后生成）
+└── logs/               # 日志目录（自动生成）
 ```
 
-> 重要提示：所有配置必须通过 `QDjob_editor` 生成后才能使用，容器不会自动生成有效配置！
+> 提示：推荐直接使用容器内置的网页版（WebUI）进行配置；也可用 `QDjob_editor` / `QDjob_editor_web` 生成配置后上传。
 
