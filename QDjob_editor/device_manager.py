@@ -3,7 +3,7 @@
 
 - 设备档案保存在工作目录 `devices.json`，可添加多组、自定义命名
 - 设备信息与软件版本分离：设备只存硬件/指纹，版本另存 `versions.json`
-- 支持从抓包 curl 解析设备参数（解析 ibex 得到真实设备指纹）
+- 支持从抓包 curl / HAR 文件解析设备参数（解析 ibex 得到真实设备指纹）
 - 登录时由 `compose_login_phone()` 把「设备 + 版本」合成为 Login 所需的字典
 
 设备字段说明（对应 Login.init_device_info）：
@@ -19,6 +19,7 @@
 import json
 import os
 import re
+from urllib.parse import parse_qsl
 
 import web_config as wc
 
@@ -312,6 +313,163 @@ def parse_fields(fields):
     dev, app_version, warnings = _device_from_pairs(pairs)
     return True, "解析成功", {"device": dev, "app_version": app_version,
                              "warnings": warnings, "found": sorted(pairs.keys())}
+
+
+# ==================== HAR 抓包解析 ====================
+# HAR 中仅关注起点/阅文域名的请求，避免采到 CDN 等无关流量
+HAR_HOST_KEYWORDS = ("qidian", "yuewen")
+# 从 query / POST 参数提取的抓包参数白名单（与 _device_from_pairs 消费的键对齐）
+HAR_PARAM_KEYS = ("ibex", "signature", "devicetype", "devicename", "osversion",
+                  "version", "sdkversion")
+# 「手动填写 Cookies」依赖的关键 cookie，缺失时给出提示
+HAR_CRITICAL_COOKIES = ("qid", "QDInfo", "ywguid", "ywkey")
+# UA 中的版本信息（QidianClient 也是从 UA 解析版本的），用于 app_version 兜底
+_UA_VERSION_RE = re.compile(r'QDReaderAndroid/(\d+\.\d+\.\d+)/(\d+)/')
+
+
+def _collect_cookie(cookies, key, value):
+    """合并单个 cookie，同名取最长值（部分请求可能带截断/置空值）。"""
+    key = str(key or "").strip()
+    value = str(value or "").strip()
+    if key and value and len(value) > len(cookies.get(key, "")):
+        cookies[key] = value
+
+
+def _collect_cookie_text(cookies, raw):
+    """解析 `k1=v1; k2=v2` 形式的 cookie 文本并合并。"""
+    for part in str(raw or "").split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            _collect_cookie(cookies, k, v)
+
+
+def _collect_param(pairs, key, value):
+    """合并抓包参数（仅白名单键，同名取最长值）。"""
+    key = str(key or "").strip()
+    if key not in HAR_PARAM_KEYS:
+        return
+    value = str(value or "").strip()
+    if not value:
+        return
+    if key in ("ibex", "signature"):
+        value = _WS_RE.sub("", value)  # base64 可能被换行/空格打断
+    if key == "version" and not re.fullmatch(r"\d{3,}", value):
+        return  # 过滤同名但含义不同的参数（如 API version=1）
+    if len(value) > len(pairs.get(key, "")):
+        pairs[key] = value
+
+
+def _collect_post_params(pairs, post):
+    """从 HAR entry 的 postData 提取白名单参数（params / form text / JSON body）。"""
+    params = post.get("params")
+    if isinstance(params, list):
+        for p in params:
+            if isinstance(p, dict):
+                _collect_param(pairs, p.get("name"), p.get("value"))
+    post_text = str(post.get("text") or "").strip()
+    if not post_text:
+        return
+    if post_text.startswith("{"):
+        try:
+            body_json = json.loads(post_text)
+        except json.JSONDecodeError:
+            body_json = None
+        if isinstance(body_json, dict):
+            for k, v in body_json.items():
+                if isinstance(v, (str, int, float)):
+                    _collect_param(pairs, k, v)
+        return
+    for k, v in parse_qsl(post_text, keep_blank_values=True):
+        _collect_param(pairs, k, v)
+
+
+def parse_har(text):
+    """解析 HAR 抓包文件内容，返回 (ok, message, result)。
+
+    除设备参数外，同时提取可复用的 Cookies / User-Agent / 原始 ibex，
+    供「手动填写 Cookies」一键导入。
+    """
+    empty = {"device": {}, "app_version": {}, "warnings": [], "found": [],
+             "user_agent": "", "ibex": "", "cookies": {}, "stats": {}}
+    try:
+        har = json.loads(text or "")
+    except json.JSONDecodeError as e:
+        return False, f"HAR 内容不是有效的 JSON: {e}", empty
+
+    entries = (har.get("log") or {}).get("entries") or []
+    if not isinstance(entries, list) or not entries:
+        return False, "HAR 中没有请求记录（log.entries 为空）", empty
+
+    pairs = {}       # 抓包参数（ibex / devicetype / ...）
+    cookies = {}     # cookie 名 -> 值
+    ua_counts = {}   # user-agent -> 出现次数
+    matched = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        req = entry.get("request") or {}
+        url = str(req.get("url") or "")
+        if not any(kw in url.lower() for kw in HAR_HOST_KEYWORDS):
+            continue
+        matched += 1
+
+        headers = {}
+        for h in req.get("headers") or []:
+            if isinstance(h, dict) and h.get("name"):
+                headers[str(h["name"]).lower()] = str(h.get("value") or "")
+
+        ua = headers.get("user-agent", "").strip()
+        if ua:
+            ua_counts[ua] = ua_counts.get(ua, 0) + 1
+
+        _collect_cookie_text(cookies, headers.get("cookie", ""))
+        for c in req.get("cookies") or []:
+            if isinstance(c, dict):
+                _collect_cookie(cookies, c.get("name"), c.get("value"))
+
+        resp = entry.get("response") or {}
+        for h in resp.get("headers") or []:
+            if isinstance(h, dict) and str(h.get("name") or "").lower() == "set-cookie":
+                # Set-Cookie 一次只有一个 cookie，属性跟在第一个分号后
+                _collect_cookie_text(cookies, str(h.get("value") or "").split(";", 1)[0])
+
+        for q in req.get("queryString") or []:
+            if isinstance(q, dict):
+                _collect_param(pairs, q.get("name"), q.get("value"))
+        _collect_post_params(pairs, req.get("postData") or {})
+
+    if not matched:
+        return False, "HAR 中未找到起点/阅文域名的请求（qidian.com / yuewen.com）", empty
+
+    user_agent = max(ua_counts, key=ua_counts.get) if ua_counts else ""
+    dev, app_version, warnings = _device_from_pairs(pairs)
+
+    if not pairs:
+        # _device_from_pairs 对空参数不产生告警，这里明确提示（常见于不含登录请求的抓包）
+        warnings.append("未在请求参数中找到设备参数（ibex / devicetype 等），"
+                        "请确认抓包包含登录或刷新请求")
+    if not app_version.get("versioncode") and user_agent:
+        m = _UA_VERSION_RE.search(user_agent)
+        if m:
+            app_version["version"] = m.group(1)
+            app_version["versioncode"] = m.group(2)
+
+    missing_cookies = [k for k in HAR_CRITICAL_COOKIES if not cookies.get(k)]
+    if missing_cookies:
+        warnings.append("未捕获到 cookie: " + "、".join(missing_cookies) +
+                        "（请确认抓包时账号已登录）")
+
+    result = {
+        "device": dev,
+        "app_version": app_version,
+        "warnings": warnings,
+        "found": sorted(pairs.keys()),
+        "user_agent": user_agent,
+        "ibex": pairs.get("ibex", ""),
+        "cookies": cookies,
+        "stats": {"entries_total": len(entries), "entries_matched": matched},
+    }
+    return True, "解析成功", result
 
 
 # ==================== 规范化 / 合成 ====================

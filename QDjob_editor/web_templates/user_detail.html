@@ -66,6 +66,8 @@
     </div>
     <div class="btn-row">
       <button class="btn primary" id="save-manual">保存 Cookies</button>
+      <button class="btn" id="har-import">从 HAR 文件导入</button>
+      <input type="file" id="har-file" accept=".har,application/json" hidden>
       <button class="btn" id="convert-cookies">转换并填入</button>
       <button class="btn" id="reload-manual">重新加载</button>
     </div>
@@ -458,6 +460,35 @@ UI.qs('#convert-cookies').addEventListener('click', async function () {
     UI.qs('#m-cookies').value = res.data.json;
     UI.toast('已转换为 JSON 并填入上方输入框', 'ok');
   }
+});
+
+// 从 HAR 文件一键导入 User-Agent / ibex / Cookies，填入后需手动确认保存
+UI.qs('#har-import').addEventListener('click', function () { UI.qs('#har-file').click(); });
+UI.qs('#har-file').addEventListener('change', function () {
+  const file = this.files && this.files[0];
+  this.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async function () {
+    const res = await UI.api('POST', '/api/devices/parse-har', { text: String(reader.result || '') });
+    if (!res.ok) return;
+    const d = res.data || {};
+    if (d.user_agent) UI.qs('#m-ua').value = d.user_agent;
+    if (d.ibex) UI.qs('#m-ibex').value = d.ibex;
+    const cookieCount = Object.keys(d.cookies || {}).length;
+    if (cookieCount) UI.qs('#m-cookies').value = JSON.stringify(d.cookies, null, 2);
+    const warns = d.warnings || [];
+    const filled = [];
+    if (d.user_agent) filled.push('User-Agent');
+    if (d.ibex) filled.push('ibex');
+    if (cookieCount) filled.push('Cookies（' + cookieCount + ' 项）');
+    UI.status('#manual-status', warns.length ? 'warn' : 'ok',
+      filled.length ? 'HAR 解析完成，已填入 ' + filled.join('、') : 'HAR 解析完成，未提取到可用凭据',
+      warns.length ? '提示：' + UI.escapeHtml(warns.join('；')) : '请确认内容后点击「保存 Cookies」。');
+    UI.toast('HAR 解析完成，请确认后保存', warns.length ? 'warn' : 'ok');
+  };
+  reader.onerror = function () { UI.toast('读取文件失败', 'err'); };
+  reader.readAsText(file);
 });
 
 // ==================== 设备信息 ====================

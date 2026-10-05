@@ -114,13 +114,22 @@ function openDeviceModal(rec) {
       field('d-vercode', 'versioncode（可选）', ver.versioncode, '1656') +
       field('d-sdk', 'sdkversion（可选）', ver.sdkversion || '401', '401') +
     '</div>' +
-    '<details class="advanced" open><summary>① 从抓包 curl 导入（推荐）</summary>' +
+    '<details class="advanced" open><summary>① 从 HAR 文件导入（推荐）</summary>' +
+      '<p class="help muted mt-8">选择起点 App 抓包导出的 .har 文件（Chrome/Edge 开发者工具或抓包工具均可导出），自动提取设备参数与软件版本；同时提取到的 Cookies、User-Agent、ibex 可在用户详情页「登录 → 手动填写 Cookies」处从同一文件一键导入。</p>' +
+      '<div class="btn-row"><input type="file" id="d-har-file" accept=".har,application/json" style="max-width:320px">' +
+      '<button class="btn" id="d-har-parse">解析并填入</button></div>' +
+      '<p class="help muted mt-8">也可以直接粘贴 HAR 文件内容：</p>' +
+      '<div class="field"><textarea id="d-har-text" rows="3" placeholder="粘贴 .har 文件的完整 JSON 内容"></textarea></div>' +
+      '<div class="btn-row"><button class="btn" id="d-har-text-parse">解析并填入</button></div>' +
+      '<p class="help mt-8" id="d-har-warn"></p>' +
+    '</details>' +
+    '<details class="advanced"><summary>② 从抓包 curl 导入</summary>' +
       '<p class="help muted mt-8">粘贴真机登录抓包的 curl（手机验证码登录或账号密码登录均可，二者设备参数相同），点击解析自动填入下方字段。</p>' +
       '<div class="field"><textarea id="d-curl" rows="4" placeholder="curl -X POST ..."></textarea></div>' +
       '<div class="btn-row"><button class="btn" id="d-parse">解析并填入</button></div>' +
       '<p class="help mt-8" id="d-warn"></p>' +
     '</details>' +
-    '<details class="advanced"><summary>② 手动输入抓包参数</summary>' +
+    '<details class="advanced"><summary>③ 手动输入抓包参数</summary>' +
       '<p class="help muted mt-8">把抓包请求中对应字段逐个粘贴进来，点“解析并填入”。<strong>ibex 为必填</strong>；其余留空即可。</p>' +
       '<div class="field"><label>ibex</label><textarea id="f-ibex" rows="3" placeholder="抓包中的 ibex 值"></textarea></div>' +
       '<div class="grid cols-2">' +
@@ -134,7 +143,7 @@ function openDeviceModal(rec) {
       '<div class="btn-row"><button class="btn" id="f-parse">解析并填入</button></div>' +
       '<p class="help mt-8" id="f-warn"></p>' +
     '</details>' +
-    '<details class="advanced"><summary>③ 设备字段（完整，可手动修改/补充）</summary>' +
+    '<details class="advanced"><summary>④ 设备字段（完整，可手动修改/补充）</summary>' +
       '<div class="grid cols-2 mt-8">' +
         field('d-brand', '品牌 brand', dev.brand, 'Lenovo') +
         field('d-model', '型号 model', dev.model, 'TB128FU') +
@@ -206,6 +215,48 @@ function openDeviceModal(rec) {
     applyParsed(r, '#f-warn');
   };
 
+  // HAR 导入：解析成功后把保存来源记为 har
+  let parsedSource = '';
+
+  async function parseHarText(text, warnId) {
+    if (!text) { UI.toast('请先选择或粘贴 HAR 内容', 'warn'); return; }
+    const r = await UI.api('POST', '/api/devices/parse-har', { text: text });
+    if (!r.ok) return;
+    parsedSource = 'har';
+    applyParsed(r, warnId);
+    const d = r.data || {};
+    const stats = d.stats || {};
+    let msg = '';
+    if (stats.entries_matched !== undefined) {
+      msg += '匹配起点/阅文请求 ' + stats.entries_matched + '/' + stats.entries_total + ' 条。';
+    }
+    const extra = [];
+    if (d.user_agent) extra.push('User-Agent');
+    if (d.ibex) extra.push('ibex');
+    const cookieCount = Object.keys(d.cookies || {}).length;
+    if (cookieCount) extra.push('Cookies（' + cookieCount + ' 项）');
+    if (extra.length) {
+      msg += '同时提取到 ' + extra.join('、') + '，可在用户详情页「登录 → 手动填写 Cookies」处从同一文件一键导入。';
+    }
+    if (msg) {
+      UI.qs(warnId).innerHTML += '<br><span class="tag info">' + UI.escapeHtml(msg) + '</span>';
+    }
+  }
+
+  UI.qs('#d-har-parse').onclick = function () {
+    const input = UI.qs('#d-har-file');
+    const file = input.files && input.files[0];
+    if (!file) { UI.toast('请先选择 .har 文件', 'warn'); return; }
+    const reader = new FileReader();
+    reader.onload = function () { parseHarText(String(reader.result || ''), '#d-har-warn'); };
+    reader.onerror = function () { UI.toast('读取文件失败', 'err'); };
+    reader.readAsText(file);
+  };
+
+  UI.qs('#d-har-text-parse').onclick = function () {
+    parseHarText(UI.qs('#d-har-text').value.trim(), '#d-har-warn');
+  };
+
   UI.qs('#d-save').onclick = async function () {
     const device = {
       brand: UI.qs('#d-brand').value.trim(),
@@ -235,7 +286,7 @@ function openDeviceModal(rec) {
       note: UI.qs('#d-note').value.trim(),
       device: device,
       version: version,
-      source: rec ? (rec.source || 'manual') : 'manual',
+      source: parsedSource || (rec ? (rec.source || 'manual') : 'manual'),
     });
     if (r.ok) {
       UI.closeModal();
