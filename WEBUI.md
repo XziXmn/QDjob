@@ -104,46 +104,16 @@ docker run -d \
 数据卷 `/app` 保存 `config.json`、`cookies/`、`logs/`、`crontab.txt`。访问 `http://<主机>:33989` 即可配置。
 （容器内不显示托盘、不自动开浏览器；口令由 `QDJOB_WEBUI_PASSWORD` 管理时无法在页面修改。）
 
-## 7. 打包（Nuitka）
-
-CI 会先执行 `python QDjob_editor/gen_embedded.py` 把 `login_data.json` 编译进二进制（不落地明文），
-再分别构建 Windows / Linux 的 `QDjob_editor_web`（onefile 单文件）。
-
-本地打包示例：
-
-```bash
-python QDjob_editor/gen_embedded.py
-python -m nuitka --standalone --onefile \
-  --nofollow-import-to=webview --nofollow-import-to=captcha_verifier \
-  --output-filename=QDjob_editor_web \
-  --include-data-dir=QDjob_editor/web_templates=web_templates \
-  --include-data-dir=QDjob_editor/web_static=web_static \
-  QDjob_editor/webui.py
-```
-
-> 说明：`gen_embedded.py` 生成的 `_embedded_data.py` 含敏感数据，已在 `.gitignore` 中忽略，请勿提交。
-
-## 8. 版本号维护
-
-版本号统一在 **`QDjob_editor/app_info.py`** 的 `VERSION` 一处修改：
-
-```python
-VERSION = "v1.3.6"
-```
-
-GUI（`GUI.py`）与 WebUI 都会从这里读取，无需再改其它文件。
-发布时打 tag（`v*`）即可触发 GitHub Actions 构建与 Docker 镜像发布。
-
-## 9. 安全提示
+## 7. 安全提示
 
 
 - 请务必设置 `QDJOB_WEBUI_PASSWORD`，尤其是把端口映射到公网时；cookies 属于敏感凭据。
 - WebUI 默认仅监听 `127.0.0.1`；容器内由 entrypoint 设为 `0.0.0.0`。
 
-## 10. 真实设备与软件版本
+## 8. 真实设备与软件版本
 
-### 10.1 方式①：从抓包 curl 导入（推荐，降低风控）
-
+### 8.1 方式①：从抓包 curl 导入（推荐，降低风控）
+[详细抓取教程](./realphone.md)
 1. 用抓包工具（Fiddler / Charles / Reqable / mitmproxy 等）抓真机**登录请求**，复制其 **curl**；
    - 手机验证码登录、账号密码登录均可，二者设备参数一致（密码字段与设备无关）。
 2. 打开 WebUI「真实设备 → 添加设备」，把 curl 粘贴到「① 从抓包 curl 导入」，点「解析并填入」；
@@ -172,7 +142,7 @@ GUI（`GUI.py`）与 WebUI 都会从这里读取，无需再改其它文件。
 > **关于 `signature`**：它是用 `qid + 当前时间` 生成的（`encode_signature`），程序在每次请求时会**自行重新生成**，
 > 所以**不需要从抓包保存**。抓包里的 `signature` 唯一用途是「没有 ibex 时兜底取出 qid」。
 
-### 10.3 方式③：完整设备字段（手动填写，已折叠）
+### 8.3 方式③：完整设备字段（手动填写，已折叠）
 
 在「③ 设备字段（完整，可手动修改/补充）」中逐个填写全部字段。其中 `brand / model / qid / phone_security` 为必需项；
 没有 ibex 指纹时程序会用通用算法生成，保真度不如方式①②。
@@ -181,7 +151,7 @@ GUI（`GUI.py`）与 WebUI 都会从这里读取，无需再改其它文件。
 > `phone_security_over` 缺省时自动等于 `phone_security`。
 > 另有「用户列表页 → 从 HAR 导入」可一键新建/更新用户并自动登记设备档案（见「登录方式说明」）。
 
-### 10.4 登录时选择设备与版本
+### 8.4 登录时选择设备与版本
 
 在用户详情 →「登录」页的「🧬 登录设备」卡片中：
 
@@ -193,7 +163,7 @@ GUI（`GUI.py`）与 WebUI 都会从这里读取，无需再改其它文件。
 
 > 保存设备档案时，解析到的软件版本会一并记录到该设备（方式①②会自动填入；方式③的版本字段为**可选**，可留空）。
 
-### 10.5 软件版本表放哪里
+### 8.5 软件版本表放哪里
 
 版本号与设备无关，单独维护：
 
@@ -213,7 +183,7 @@ GUI（`GUI.py`）与 WebUI 都会从这里读取，无需再改其它文件。
 
 也可以在「真实设备」页底部的「软件版本」卡片里直接添加（会写入工作目录 `versions.json`）。
 
-## 11. 状态检测与风控等级
+## 9. 状态检测与风控等级
 
 用户详情「基本信息 → 🔎 状态检测」提供四项，含义不同：
 
